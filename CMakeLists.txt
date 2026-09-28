@@ -66,7 +66,9 @@ endif()
 # fragfs_core contains everything except the CLI and (later) the filesystem
 # adapters. It must never depend on FUSE or on any CLI concerns.
 add_library(fragfs_core STATIC
+    src/core/error.cpp
     src/core/fragment.cpp
+    src/core/metadata.cpp
     src/core/version.cpp)
 
 target_include_directories(fragfs_core PUBLIC

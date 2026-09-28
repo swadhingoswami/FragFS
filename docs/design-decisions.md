@@ -118,3 +118,40 @@ into a detectable `nullopt`.
 callers must handle the failure rather than assuming a valid range. Validation
 is explicit (`hasValidRanges()`), not enforced by the type, so a fragment can
 exist transiently in a partially-parsed state.
+
+## D10 — Fragments must tile the logical space exactly
+
+**Decision:** Valid metadata requires the fragments to be ordered and to cover
+`[0, logicalSize)` exactly: the first starts at 0, each starts where the
+previous ended, and `logicalSize` equals the end of the last fragment. Gaps and
+overlaps are rejected.
+
+**Why:** Tiling guarantees that every logical offset maps to exactly one
+fragment. With a gap, a read would land in unmapped space with no defined
+result; with an overlap, two fragments would claim the same logical byte and
+the mapping would be ambiguous. Enforcing a single invariant removes both
+classes of undefined behaviour up front.
+
+**Consequence:** zero-length fragments are rejected at the metadata level, even
+though the `Fragment` type itself tolerates them. An "empty logical file" is
+represented by zero fragments with `logicalSize == 0`, not by an empty fragment.
+
+## D11 — Errors are reported as `std::error_code`
+
+**Decision:** FragFS defines an `ErrorCode` enum registered as a
+`std::error_code` category (`"fragfs"`). Validation returns a `ValidationResult`
+that carries the error code, the offending fragment index, and a human-readable
+detail string.
+
+**Why:** `std::error_code` is the standard, lightweight, non-throwing mechanism
+for reporting failure and composes with `std::system_error` and
+`system_category()` (which will represent `errno` from POSIX calls later). A
+bare `bool`/`int` would lose the reason; exceptions for expected, routine
+failures (a corrupt file is routine input) would be the wrong tool. The extra
+index/detail fields preserve the diagnostic context that `error_code` alone
+cannot hold.
+
+**Consequence:** callers test `!ec` for success and compare against specific
+codes. Note that a default-constructed `std::error_code` is `system:0`, which is
+falsy but *not* `==` to `fragfs:0`, because `operator==` compares the category
+as well as the value.

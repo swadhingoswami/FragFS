@@ -10,3 +10,4 @@ endfunction()
 
 fragfs_add_test(smoke_test)
 fragfs_add_test(fragment_test)
+fragfs_add_test(metadata_test)

@@ -136,16 +136,17 @@ and attaches the resulting `fragfs` binaries to a GitHub Release.
 
 ## Current status
 
-Milestone 2: the `Fragment` data model with overflow-checked range accessors.
-No metadata persistence or mapping yet.
+Milestone 3: in-memory `Metadata` (logical size + fragment list) with
+structural validation and a `std::error_code` category. No on-disk format or
+mapping yet.
 
 ## Roadmap
 
 ```text
 [x] Repository + CMake + CLI skeleton
 [x] Fragment data model
+[x] Metadata representation + validation
 [x] Linux/macOS CI (+ sanitizers) and tagged releases
-[ ] Metadata representation
 [ ] Metadata serialization
 [ ] Logical-to-physical mapper
 [ ] POSIX file abstraction
