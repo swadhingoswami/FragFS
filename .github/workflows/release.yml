@@ -1,0 +1,64 @@
+name: release
+
+# Continuous delivery: pushing a tag like `v0.1.0` builds release binaries on
+# Linux and macOS, runs the tests against the exact tagged revision, and
+# attaches the binaries to a GitHub Release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or reuse the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
+
+  build-and-upload:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: fragfs-linux-x86_64
+          - os: macos-latest
+            artifact: fragfs-macos-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DFRAGFS_BUILD_BENCHMARKS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Release
+
+      - name: Package
+        run: tar -czf "${{ matrix.artifact }}.tar.gz" -C build fragfs
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release upload "${GITHUB_REF_NAME}"
+          "${{ matrix.artifact }}.tar.gz" --clobber

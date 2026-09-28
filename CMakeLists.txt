@@ -38,6 +38,29 @@ target_compile_options(fragfs_warnings INTERFACE
     >)
 
 # ---------------------------------------------------------------------------
+# Sanitizers
+# ---------------------------------------------------------------------------
+# Optional AddressSanitizer + UndefinedBehaviorSanitizer build. Used by CI and
+# available locally to catch out-of-bounds accesses and integer UB while the
+# mapping and parsing code is still small.
+option(FRAGFS_ENABLE_SANITIZERS
+    "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(FRAGFS_ENABLE_SANITIZERS)
+    # Note: the sanitizer flags are listed one per generator expression. A
+    # comma inside a generator-expression value (e.g. `address,undefined`)
+    # would be parsed as an argument separator, so it must be split.
+    add_compile_options(
+        $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-fsanitize=address>
+        $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-fsanitize=undefined>
+        $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-fno-omit-frame-pointer>
+    )
+    add_link_options(
+        $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-fsanitize=address>
+        $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-fsanitize=undefined>
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # Core library
 # ---------------------------------------------------------------------------
 # fragfs_core contains everything except the CLI and (later) the filesystem

@@ -105,6 +105,35 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+## Testing
+
+Each test file compiles into its own executable and is registered with CTest:
+
+```bash
+ctest --test-dir build --output-on-failure          # run everything
+ctest --test-dir build -R fragment_test -V          # one suite, verbose
+./build/tests/fragment_test                          # run a suite directly
+```
+
+For memory-safety and integer-overflow checking, configure a sanitizer build:
+
+```bash
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DFRAGFS_ENABLE_SANITIZERS=ON
+cmake --build build-asan --parallel
+ctest --test-dir build-asan --output-on-failure
+```
+
+## Continuous integration and delivery
+
+`.github/workflows/build.yml` runs on every push and pull request:
+
+- Release build + full test suite on **Ubuntu** and **macOS**
+- A **Debug build under AddressSanitizer + UndefinedBehaviorSanitizer** on Ubuntu
+
+`.github/workflows/release.yml` provides continuous delivery: pushing a tag
+such as `v0.1.0` builds the tagged revision on Linux and macOS, runs the tests,
+and attaches the resulting `fragfs` binaries to a GitHub Release.
+
 ## Current status
 
 Milestone 2: the `Fragment` data model with overflow-checked range accessors.
@@ -115,6 +144,7 @@ No metadata persistence or mapping yet.
 ```text
 [x] Repository + CMake + CLI skeleton
 [x] Fragment data model
+[x] Linux/macOS CI (+ sanitizers) and tagged releases
 [ ] Metadata representation
 [ ] Metadata serialization
 [ ] Logical-to-physical mapper
@@ -131,7 +161,6 @@ No metadata persistence or mapping yet.
 [ ] Fragment removal
 [ ] Concurrency
 [ ] Performance benchmarks
-[ ] Linux/macOS CI
 [ ] FUSE / filesystem adapter
 ```
 

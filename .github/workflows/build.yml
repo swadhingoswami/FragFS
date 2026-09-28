@@ -5,6 +5,7 @@ on:
   pull_request:
 
 jobs:
+  # Release build on both supported platforms, running the full test suite.
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -25,3 +26,25 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure -C Release
+
+  # Debug build under AddressSanitizer + UndefinedBehaviorSanitizer. Catches
+  # out-of-bounds accesses and integer overflow that a release build hides.
+  sanitizers:
+    name: ubuntu-latest (asan + ubsan)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DFRAGFS_ENABLE_SANITIZERS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
