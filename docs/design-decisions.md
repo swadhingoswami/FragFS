@@ -155,3 +155,25 @@ cannot hold.
 codes. Note that a default-constructed `std::error_code` is `system:0`, which is
 falsy but *not* `==` to `fragfs:0`, because `operator==` compares the category
 as well as the value.
+
+## D12 — Fixed little-endian encoding, bounds-checked decode
+
+**Decision:** Serialization writes each field explicitly in little-endian order
+via `appendU32`/`appendU64`; deserialization reads with `readU32`/`readU64` and
+validates every length against the remaining buffer before use. Raw `memcpy` of
+structs is forbidden.
+
+**Why:** Direct struct dumps would bake in padding, host endianness, and ABI
+layout — a metadata file written by one compiler/platform could be misread by
+another. Explicit encoding makes the format a stable contract. On the read side,
+the buffer is untrusted: a `path_length` or `fragment_count` taken on faith
+could cause an out-of-bounds read or an unbounded `reserve`. The decoder
+therefore treats every field as suspect and checks it against the bytes that
+actually remain.
+
+**Consequence:** the decoder's fast "can the buffer hold this many fragments"
+check is only a lower bound; because paths are variable length, an authoritative
+per-fragment bounds check runs inside the loop. `serializeMetadata` is a pure
+encoder with a validity precondition — validation is the caller's job (and is
+also re-run inside `deserializeMetadata`, so decoded metadata is always
+structurally sound).

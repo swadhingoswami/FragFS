@@ -136,9 +136,8 @@ and attaches the resulting `fragfs` binaries to a GitHub Release.
 
 ## Current status
 
-Milestone 3: in-memory `Metadata` (logical size + fragment list) with
-structural validation and a `std::error_code` category. No on-disk format or
-mapping yet.
+Milestone 4: a versioned, little-endian metadata format with a bounds-checked
+encoder/decoder. The mapping engine and file I/O do not exist yet.
 
 ## Roadmap
 
@@ -146,8 +145,8 @@ mapping yet.
 [x] Repository + CMake + CLI skeleton
 [x] Fragment data model
 [x] Metadata representation + validation
+[x] Metadata serialization
 [x] Linux/macOS CI (+ sanitizers) and tagged releases
-[ ] Metadata serialization
 [ ] Logical-to-physical mapper
 [ ] POSIX file abstraction
 [ ] Logical reads

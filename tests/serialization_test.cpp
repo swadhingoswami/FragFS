@@ -1,0 +1,203 @@
+#include "test_framework.h"
+
+#include <fragfs/error.h>
+#include <fragfs/metadata.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace {
+
+using fragfs::DecodeResult;
+using fragfs::ErrorCode;
+using fragfs::Fragment;
+using fragfs::Metadata;
+
+constexpr uint64_t kMax = std::numeric_limits<uint64_t>::max();
+
+Fragment frag(uint64_t logicalStart,
+              uint64_t physicalStart,
+              uint64_t length,
+              std::string path = "part.dat") {
+    Fragment fragment;
+    fragment.logicalStart = logicalStart;
+    fragment.physicalStart = physicalStart;
+    fragment.length = length;
+    fragment.path = std::move(path);
+    return fragment;
+}
+
+void writeU32(std::vector<std::byte>& buffer, std::size_t offset, uint32_t value) {
+    for (int i = 0; i < 4; ++i) {
+        buffer[offset + static_cast<std::size_t>(i)] =
+            static_cast<std::byte>((value >> (8 * i)) & 0xFFu);
+    }
+}
+
+void writeU64(std::vector<std::byte>& buffer, std::size_t offset, uint64_t value) {
+    for (int i = 0; i < 8; ++i) {
+        buffer[offset + static_cast<std::size_t>(i)] =
+            static_cast<std::byte>((value >> (8 * i)) & 0xFFu);
+    }
+}
+
+DecodeResult decode(const std::vector<std::byte>& buffer) {
+    return fragfs::deserializeMetadata(buffer.data(), buffer.size());
+}
+
+} // namespace
+
+TEST_CASE("metadata survives a serialize/deserialize round trip") {
+    Metadata metadata;
+    metadata.logicalSize = 350;
+    metadata.fragments = {frag(0, 0, 100, "part1.dat"),
+                          frag(100, 4096, 50, "part2.dat"),
+                          frag(150, 0, 200, "part3.dat")};
+
+    const DecodeResult result = decode(fragfs::serializeMetadata(metadata));
+
+    FRAGFS_CHECK(result.ok());
+    FRAGFS_CHECK_EQ(result.metadata.logicalSize, uint64_t{350});
+    FRAGFS_CHECK_EQ(result.metadata.fragments.size(), std::size_t{3});
+    FRAGFS_CHECK_EQ(result.metadata.fragments[1].logicalStart, uint64_t{100});
+    FRAGFS_CHECK_EQ(result.metadata.fragments[1].physicalStart, uint64_t{4096});
+    FRAGFS_CHECK_EQ(result.metadata.fragments[1].length, uint64_t{50});
+    FRAGFS_CHECK_EQ(result.metadata.fragments[1].path, std::string("part2.dat"));
+    FRAGFS_CHECK_EQ(result.metadata.fragments[2].physicalStart, uint64_t{0});
+}
+
+TEST_CASE("empty metadata survives a round trip") {
+    Metadata metadata;
+
+    const DecodeResult result = decode(fragfs::serializeMetadata(metadata));
+
+    FRAGFS_CHECK(result.ok());
+    FRAGFS_CHECK_EQ(result.metadata.logicalSize, uint64_t{0});
+    FRAGFS_CHECK_EQ(result.metadata.fragments.size(), std::size_t{0});
+}
+
+TEST_CASE("paths with spaces and slashes survive a round trip") {
+    Metadata metadata;
+    metadata.logicalSize = 10;
+    metadata.fragments = {frag(0, 0, 10, "a directory/part 1.dat")};
+
+    const DecodeResult result = decode(fragfs::serializeMetadata(metadata));
+
+    FRAGFS_CHECK(result.ok());
+    FRAGFS_CHECK_EQ(result.metadata.fragments[0].path,
+                    std::string("a directory/part 1.dat"));
+}
+
+TEST_CASE("the encoded size matches the documented layout") {
+    Metadata metadata;
+    metadata.logicalSize = 10;
+    metadata.fragments = {frag(0, 0, 10, "a"), frag(10, 0, 10, "bb")};
+
+    // 32-byte header + 2 * 28-byte fixed records + 1 + 2 path bytes.
+    FRAGFS_CHECK_EQ(fragfs::serializeMetadata(metadata).size(), std::size_t{91});
+}
+
+TEST_CASE("the header starts with the expected magic and version") {
+    const std::vector<std::byte> encoded = fragfs::serializeMetadata(Metadata{});
+
+    for (std::size_t i = 0; i < fragfs::kMetadataMagic.size(); ++i) {
+        FRAGFS_CHECK_EQ(std::to_integer<unsigned char>(encoded[i]),
+                        static_cast<unsigned char>(fragfs::kMetadataMagic[i]));
+    }
+    FRAGFS_CHECK_EQ(std::to_integer<unsigned char>(encoded[8]),
+                    static_cast<unsigned char>(fragfs::kMetadataFormatVersion));
+}
+
+TEST_CASE("a corrupted magic is rejected") {
+    std::vector<std::byte> encoded = fragfs::serializeMetadata(Metadata{});
+    encoded[0] = static_cast<std::byte>('X');
+
+    FRAGFS_CHECK_EQ(decode(encoded).error,
+                    fragfs::make_error_code(ErrorCode::invalid_magic));
+}
+
+TEST_CASE("an unsupported format version is rejected") {
+    std::vector<std::byte> encoded = fragfs::serializeMetadata(Metadata{});
+    writeU32(encoded, 8, fragfs::kMetadataFormatVersion + 1);
+
+    FRAGFS_CHECK_EQ(decode(encoded).error,
+                    fragfs::make_error_code(ErrorCode::unsupported_version));
+}
+
+TEST_CASE("a buffer smaller than the header is rejected") {
+    std::vector<std::byte> encoded = fragfs::serializeMetadata(Metadata{});
+    encoded.resize(16);
+
+    FRAGFS_CHECK_EQ(decode(encoded).error,
+                    fragfs::make_error_code(ErrorCode::truncated_metadata));
+}
+
+TEST_CASE("a null buffer is rejected") {
+    FRAGFS_CHECK_EQ(fragfs::deserializeMetadata(nullptr, 0).error,
+                    fragfs::make_error_code(ErrorCode::truncated_metadata));
+}
+
+TEST_CASE("a truncated fragment body is rejected") {
+    Metadata metadata;
+    metadata.logicalSize = 10;
+    metadata.fragments = {frag(0, 0, 10, "part.dat")};
+
+    std::vector<std::byte> encoded = fragfs::serializeMetadata(metadata);
+    encoded.resize(encoded.size() - 3); // cut into the fragment record
+
+    FRAGFS_CHECK_EQ(decode(encoded).error,
+                    fragfs::make_error_code(ErrorCode::truncated_metadata));
+}
+
+TEST_CASE("a path length larger than the remaining buffer is rejected") {
+    Metadata metadata;
+    metadata.logicalSize = 10;
+    metadata.fragments = {frag(0, 0, 10, "part.dat")};
+
+    std::vector<std::byte> encoded = fragfs::serializeMetadata(metadata);
+    // path_length lives at offset 32 + 24 = 56 in the first fragment.
+    writeU32(encoded, 56, 0xFFFFFFFFu);
+
+    FRAGFS_CHECK_EQ(decode(encoded).error,
+                    fragfs::make_error_code(ErrorCode::truncated_metadata));
+}
+
+TEST_CASE("an excessive fragment count is rejected before allocating") {
+    std::vector<std::byte> encoded = fragfs::serializeMetadata(Metadata{});
+    writeU64(encoded, 24, fragfs::kMaxFragments + 1);
+
+    FRAGFS_CHECK_EQ(decode(encoded).error,
+                    fragfs::make_error_code(ErrorCode::invalid_fragment_count));
+}
+
+TEST_CASE("a count that cannot fit in the buffer is treated as truncated") {
+    std::vector<std::byte> encoded = fragfs::serializeMetadata(Metadata{});
+    writeU64(encoded, 24, 2); // claims two fragments, buffer holds none
+
+    FRAGFS_CHECK_EQ(decode(encoded).error,
+                    fragfs::make_error_code(ErrorCode::truncated_metadata));
+}
+
+TEST_CASE("deserialization rejects structurally invalid metadata") {
+    Metadata overlapping;
+    overlapping.logicalSize = 150;
+    overlapping.fragments = {frag(0, 0, 100), frag(50, 0, 100)};
+
+    FRAGFS_CHECK_EQ(decode(fragfs::serializeMetadata(overlapping)).error,
+                    fragfs::make_error_code(ErrorCode::overlapping_fragments));
+}
+
+TEST_CASE("deserialization rejects overflowing fragment ranges") {
+    Metadata overflowing;
+    overflowing.logicalSize = 100;
+    overflowing.fragments = {frag(0, kMax, 100)};
+
+    FRAGFS_CHECK_EQ(decode(fragfs::serializeMetadata(overflowing)).error,
+                    fragfs::make_error_code(ErrorCode::invalid_range));
+}
+
+FRAGFS_TEST_MAIN

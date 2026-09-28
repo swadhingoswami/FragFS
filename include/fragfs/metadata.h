@@ -55,4 +55,26 @@ struct Metadata {
     ValidationResult validate() const;
 };
 
+// Result of decoding a serialized metadata buffer. `error` is empty on
+// success, in which case `metadata` is populated.
+struct DecodeResult {
+    std::error_code error;
+    Metadata metadata;
+
+    bool ok() const { return !error; }
+};
+
+// Encodes metadata into the on-disk byte layout (see docs/file-format.md).
+//
+// Precondition: `metadata` is structurally valid. Serialization performs no
+// validation of its own; it is a pure encoder for data FragFS produced.
+std::vector<std::byte> serializeMetadata(const Metadata& metadata);
+
+// Decodes metadata from a byte buffer. All lengths are validated against the
+// remaining buffer size before use, so malformed input is rejected rather than
+// trusted. On success the decoded metadata has also passed structural
+// validation; a structurally invalid buffer fails with the validation's error
+// code.
+DecodeResult deserializeMetadata(const std::byte* data, std::size_t size);
+
 } // namespace fragfs
