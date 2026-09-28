@@ -70,10 +70,15 @@ add_library(fragfs_core STATIC
     src/core/fragment.cpp
     src/core/mapper.cpp
     src/core/metadata.cpp
-    src/core/version.cpp)
+    src/core/version.cpp
+    src/platform/posix_file.cpp)
 
 target_include_directories(fragfs_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
+# std::filesystem requires an explicit library on GCC before 9.
+target_link_libraries(fragfs_core PUBLIC
+    $<$<AND:$<CXX_COMPILER_ID:GNU>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,9>>:stdc++fs>)
 
 target_link_libraries(fragfs_core PRIVATE fragfs_warnings)
 

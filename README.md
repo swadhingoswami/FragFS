@@ -136,8 +136,9 @@ and attaches the resulting `fragfs` binaries to a GitHub Release.
 
 ## Current status
 
-Milestone 5: a pure logical-to-physical mapper that plans reads as a list of
-physical steps. No file I/O or commands yet.
+Milestone 6: a move-only RAII `PosixFile` abstraction (open/close/pread/pwrite/
+size/sync) with `errno` mapped to `std::error_code`. Logical reads and commands
+are still to come.
 
 ## Roadmap
 
@@ -147,8 +148,8 @@ physical steps. No file I/O or commands yet.
 [x] Metadata representation + validation
 [x] Metadata serialization
 [x] Logical-to-physical mapper
+[x] POSIX file abstraction
 [x] Linux/macOS CI (+ sanitizers) and tagged releases
-[ ] POSIX file abstraction
 [ ] Logical reads
 [ ] create command
 [ ] info command

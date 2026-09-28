@@ -51,10 +51,16 @@ The core knows nothing about FUSE, the CLI, or how it is being driven.
 
 ### Platform (`src/platform`)
 
-Thin wrappers over POSIX calls (`open`, `close`, `pread`, `fstat`, `fsync`,
-`rename`). Behaviour is identical on Linux and macOS, so there is currently a
+Thin wrappers over POSIX calls (`open`, `close`, `pread`, `pwrite`, `fstat`,
+`fsync`). Behaviour is identical on Linux and macOS, so there is currently a
 single POSIX implementation. Platform-specific code, when unavoidable, is
 isolated here behind the same interface.
+
+`PosixFile` (in `include/fragfs/posix_file.h`) is a move-only RAII handle: it
+owns the descriptor, closes it on destruction, and reports failures as
+`std::error_code` mapped from `errno`. It exposes offset-based `pread`/`pwrite`
+so there is no shared file-position state, which is what allows concurrent
+reads later. The rest of FragFS never sees a raw descriptor or a POSIX header.
 
 ## Data flow of a read
 

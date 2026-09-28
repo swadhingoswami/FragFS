@@ -210,3 +210,38 @@ inventing a second set of edge-case rules.
 overflow; it works from `logicalSize - logicalOffset` instead. Callers that want
 to distinguish a short read from a full read compare `bytesPlanned` to the
 requested size.
+
+## D15 — RAII descriptors with non-throwing, error-code factories
+
+**Decision:** `PosixFile` owns a file descriptor via RAII (move-only; the
+destructor closes it). It is created through a static `open()` that returns
+`std::optional<PosixFile>` and reports failure via an `std::error_code`
+out-parameter. `errno` is mapped through `std::generic_category()`.
+
+**Why:** RAII guarantees the descriptor is released on every path, including
+early returns and exceptions, which is the difference between a long-running
+daemon that leaks descriptors and one that does not. A move-only type makes
+double-close impossible. Non-throwing construction suits FragFS because a
+missing or unreadable file is expected input, not an exceptional condition, and
+it keeps the CLI in control of how errors are reported to the user.
+
+**Consequence:** every call can fail and must be checked; there is no implicit
+"open throws" path. `close()` is idempotent and its destructor ignores the
+result (a destructor cannot report errors). `pread`/`pwrite` retry on `EINTR`,
+guard `off_t`/`SSIZE_MAX` limits, and never use shared file-position state, so
+they are safe to call concurrently on the same descriptor.
+
+## D16 — Retry `EINTR` on I/O, but never on `close`
+
+**Decision:** `pread`, `pwrite`, and `fsync` retry when interrupted by a signal
+(`EINTR`). `close` is called once and its error is not retried.
+
+**Why:** A signal can interrupt a blocking read or write before it transfers
+any data; retrying is safe and necessary for correctness. `close`, however, is
+special: on Linux the descriptor is released even when `close` reports `EINTR`,
+so retrying can close an unrelated descriptor that the process opened in the
+meantime — a classic file-descriptor race. Treating `close` as
+non-retryable is the safe choice.
+
+**Consequence:** callers see `EINTR`-free reads/writes but must treat a failed
+`close` as "the descriptor is gone", not "try again".
