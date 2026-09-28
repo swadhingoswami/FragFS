@@ -1,0 +1,11 @@
+# Each test file compiles into its own executable so that a crash in one suite
+# cannot take the others down with it, and so `ctest` reports failures per unit.
+
+function(fragfs_add_test name)
+    add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name} PRIVATE fragfs_core fragfs_warnings)
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+fragfs_add_test(smoke_test)

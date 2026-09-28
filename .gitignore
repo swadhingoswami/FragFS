@@ -1,0 +1,33 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+.cache/
+
+# Compiled objects and libraries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Executables produced by the build
+/fragfs
+/fragfs_benchmark
+/*_test
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp

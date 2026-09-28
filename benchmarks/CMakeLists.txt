@@ -1,0 +1,2 @@
+add_executable(fragfs_benchmark benchmark.cpp)
+target_link_libraries(fragfs_benchmark PRIVATE fragfs_core fragfs_warnings)
