@@ -41,11 +41,16 @@ The heart of the system:
 - **Fragment** — one contiguous mapping from a logical range to a physical
   file range.
 - **Metadata** — the ordered list of fragments plus global properties
-  (magic, version, logical size).
+  (magic, version, logical size), with structural validation.
+- **Serialization** — the versioned, little-endian on-disk encoding.
 - **Mapper** — pure function from `(logicalOffset, size)` to a sequence of
   `(fragment, physicalOffset, length)` read steps.
 - **LogicalFile** — ties metadata, mapper, and POSIX I/O together to implement
-  `read()`.
+  `read()`, with a lazily-populated, mutex-guarded descriptor cache.
+- **Metadata store** — reads/writes the sidecar; writes are crash-safe
+  (write tmp, fsync, rename, fsync directory).
+- **Operations** — create/append/add/remove, which mutate metadata only.
+- **Verify** — checks metadata structure and every fragment's physical range.
 
 The core knows nothing about FUSE, the CLI, or how it is being driven.
 

@@ -283,3 +283,54 @@ an unreferenced fragment costs nothing.
 offset and a shared descriptor has no mutable position, the cache is safe to
 share across concurrent readers without locking; eviction (an LRU) is future
 work if descriptor pressure becomes a concern.
+
+## D19 — Crash-safe metadata replacement
+
+**Decision:** metadata is never modified in place. A new copy is written to a
+temporary file in the same directory, `fsync`ed, atomically `rename`d over the
+destination, and the directory is `fsync`ed.
+
+**Why:** an in-place `truncate` + `write` leaves a window where a crash
+destroys the mapping entirely. `rename` within a directory is atomic on POSIX,
+so readers see the old metadata or the new metadata, never a mix. The `fsync`
+calls are what make the new version durable rather than merely visible.
+
+**Consequence:** updates cost one extra file write and two `fsync`s. The
+temporary path is derived (`<metadata>.tmp`), so concurrent writers would
+collide; writer serialisation is out of scope. Directory `fsync` is
+best-effort on platforms/filesystems that reject it. See
+`docs/crash-consistency.md`.
+
+## D20 — Physical file identity is path plus a size check
+
+**Decision:** fragments reference physical files by path only. The initial
+implementation does not store device/inode, mtime, or a content hash. Instead,
+`verify` (and `read`) check that the mapped physical range fits inside the
+file's current size.
+
+**Why:** paths are portable and human-readable, and the common failure mode —
+a fragment being deleted or truncated — is caught by the size check at read
+time (`physical_range_out_of_bounds`) and surfaced explicitly by `verify`. Storing
+an inode would detect replacement, but inodes are not portable across
+filesystems, are reused after deletion, and change under ordinary copy/restore
+operations, which would produce false alarms.
+
+**Consequence:** a file replaced by a different file of the same-or-larger size
+is not detected; the mapping silently follows the new bytes. Stronger identity
+(device+inode, size, mtime, or a checksum) is a documented future enhancement,
+traded against portability and cost.
+
+## D21 — Concurrent reads without locks around the read path
+
+**Decision:** `LogicalFile` guards only its descriptor cache with a mutex.
+The actual `pread` calls run without any lock.
+
+**Why:** `pread` carries its own offset, so it has no shared mutable state to
+race on — two threads can read through the same descriptor simultaneously.
+Locking the whole read would serialise independent readers for no reason. The
+one genuinely shared mutable structure is the open-file cache (a map that may
+grow on first use), so that alone is locked.
+
+**Consequence:** readers scale with the underlying device, not with a lock.
+The returned descriptor pointer is stable (node-based container), so it stays
+valid after the lock is released. Writer coordination remains out of scope.
