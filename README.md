@@ -136,8 +136,8 @@ and attaches the resulting `fragfs` binaries to a GitHub Release.
 
 ## Current status
 
-Milestone 4: a versioned, little-endian metadata format with a bounds-checked
-encoder/decoder. The mapping engine and file I/O do not exist yet.
+Milestone 5: a pure logical-to-physical mapper that plans reads as a list of
+physical steps. No file I/O or commands yet.
 
 ## Roadmap
 
@@ -146,8 +146,8 @@ encoder/decoder. The mapping engine and file I/O do not exist yet.
 [x] Fragment data model
 [x] Metadata representation + validation
 [x] Metadata serialization
+[x] Logical-to-physical mapper
 [x] Linux/macOS CI (+ sanitizers) and tagged releases
-[ ] Logical-to-physical mapper
 [ ] POSIX file abstraction
 [ ] Logical reads
 [ ] create command

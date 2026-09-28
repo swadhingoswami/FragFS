@@ -177,3 +177,36 @@ per-fragment bounds check runs inside the loop. `serializeMetadata` is a pure
 encoder with a validity precondition — validation is the caller's job (and is
 also re-run inside `deserializeMetadata`, so decoded metadata is always
 structurally sound).
+
+## D13 — Planning is separated from I/O
+
+**Decision:** `Mapper::plan()` is a pure function that returns a `ReadPlan` (a
+list of `ReadStep`s) and performs no I/O. A later `LogicalFile` executes the
+plan with `pread()`.
+
+**Why:** Offset translation is where the subtle bugs live (boundaries, gaps,
+overflow, EOF). Making it a pure computation means those cases are exhaustively
+unit-testable with no files, no file descriptors, and no flakiness. It also lets
+different backends execute the same plan and keeps the mapper free of any
+platform dependency.
+
+**Consequence:** reads are two-phase — plan, then execute. The plan for a
+request that overruns EOF is shorter than the request; `bytesPlanned` reports
+how many logical bytes are actually available, which the caller needs to return
+a correct short-read count.
+
+## D14 — EOF follows the `pread()` convention
+
+**Decision:** a read at or past `logicalSize` yields an empty plan (zero bytes),
+not an error; a read starting before EOF but overrunning is clamped to
+`logicalSize`.
+
+**Why:** This matches POSIX `pread()`, where reading at or past end of file
+returns 0. Aligning with the underlying convention means the logical read API
+composes naturally with code that expects `read`-like semantics, and avoids
+inventing a second set of edge-case rules.
+
+**Consequence:** the mapper never evaluates `logicalOffset + size`, which could
+overflow; it works from `logicalSize - logicalOffset` instead. Callers that want
+to distinguish a short read from a full read compare `bytesPlanned` to the
+requested size.
