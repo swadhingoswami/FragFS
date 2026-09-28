@@ -83,28 +83,34 @@ The core is deliberately independent of any filesystem adapter. A future FUSE
 
 ## Example
 
+A large file is split into numbered chunks. After moving the chunks elsewhere,
+map them back into the original — without copying any data:
+
 ```bash
-# Map three physical files into one logical file. No data is copied.
-fragfs create combined.ff part1.dat part2.dat part3.dat
+# Map the chunks, in order, into the logical file `original.bin`.
+fragfs original.bin chunk_000 chunk_001 chunk_002
+
+# Running it again appends more chunks.
+fragfs original.bin chunk_003
 
 # Inspect the mapping.
-fragfs info combined.ff
+fragfs info original.bin
 
-# Read a logical byte range (binary output must go to a file or a pipe).
-fragfs read combined.ff 120000000 4096 --output result.bin
+# Reconstruct/read the original bytes (binary output to a file or pipe).
+fragfs read original.bin 0 120000000 --output restored.bin
 
-# Grow the logical file without touching existing data.
-fragfs append combined.ff part4.dat
-fragfs add combined.ff video.dat --physical-offset 500000000 --length 100000000
+# Confirm every chunk is still present and unchanged.
+fragfs verify original.bin
+```
 
-# Drop a fragment; later fragments shift down, physical data is untouched.
-fragfs remove combined.ff 1
+The equivalent long forms are also available:
 
-# Check that every fragment still resolves to a valid physical range.
-fragfs verify combined.ff
-
-# Measure read performance.
-fragfs benchmark combined.ff
+```bash
+fragfs create original.bin chunk_000 chunk_001
+fragfs append original.bin chunk_002
+fragfs add original.bin video.dat --physical-offset 500000000 --length 100000000
+fragfs remove original.bin 1
+fragfs benchmark original.bin
 ```
 
 ## Performance

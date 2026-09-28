@@ -88,6 +88,60 @@ std::optional<Metadata> loadMetadata(const std::string& command,
 
 } // namespace
 
+int runAggregate(const std::vector<std::string>& args) {
+    // args[0] is the logical file; args[1..] are the physical chunks.
+    if (args.size() < 2) {
+        return usageError("", "usage: fragfs <logical-file> <chunk> [<chunk>...]");
+    }
+
+    const std::filesystem::path logical = args[0];
+    const std::filesystem::path metadataPath = metadataPathFor(logical);
+
+    // Hold the writer lock across load-modify-store so concurrent runs cannot
+    // lose each other's chunks.
+    std::error_code error;
+    std::optional<MetadataLock> lock = MetadataLock::acquire(metadataPath, error);
+    if (!lock.has_value()) {
+        return runtimeError(logical.string(),
+                            "cannot lock '" + metadataPath.string() + "': " +
+                                error.message());
+    }
+
+    Metadata metadata;
+    error = readMetadataFile(metadataPath, metadata);
+    if (error) {
+        if (error == std::errc::no_such_file_or_directory) {
+            metadata = Metadata{}; // first run: start from an empty mapping
+        } else {
+            return runtimeError(logical.string(),
+                                "cannot read '" + metadataPath.string() + "': " +
+                                    error.message());
+        }
+    }
+
+    // Append every chunk in the order given. If any chunk is missing or
+    // invalid, abort without writing, leaving the previous mapping intact.
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        const std::error_code appendError = appendFile(metadata, args[i], metadataPath);
+        if (appendError) {
+            return runtimeError(logical.string(),
+                                "cannot map '" + args[i] + "': " + appendError.message());
+        }
+    }
+
+    error = writeMetadataFile(metadataPath, metadata);
+    if (error) {
+        return runtimeError(logical.string(), error.message());
+    }
+
+    std::printf("Mapped %zu chunk(s) into %s\n", args.size() - 1, logical.c_str());
+    std::printf("  fragments   : %zu\n", metadata.fragments.size());
+    std::printf("  logical size: %llu bytes\n",
+                static_cast<unsigned long long>(metadata.logicalSize));
+    std::printf("  metadata    : %s\n", metadataPath.c_str());
+    return 0;
+}
+
 int runCreate(const std::vector<std::string>& args) {
     if (args.size() < 2) {
         return usageError("create", "usage: fragfs create <output> <file>...");

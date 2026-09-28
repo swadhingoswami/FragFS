@@ -145,4 +145,39 @@ TEST_CASE("removing every fragment yields an empty logical file") {
     FRAGFS_CHECK_EQ(metadata.fragments.size(), std::size_t{0});
 }
 
+TEST_CASE("aggregate semantics: create on first run, append on the next") {
+    const TempDir dir;
+    writeTextFile(dir.path / "c0", "AAAA");
+    writeTextFile(dir.path / "c1", "BBBBBB");
+    writeTextFile(dir.path / "c2", "CC");
+    const std::filesystem::path metadataPath = dir.path / "original.bin.meta";
+
+    // Mirrors the primary `fragfs <logical> <chunk>...` command: start from the
+    // existing mapping if present, otherwise from empty.
+    const auto loadOrEmpty = [&](Metadata& metadata) -> std::error_code {
+        std::error_code error = fragfs::readMetadataFile(metadataPath, metadata);
+        if (error == std::errc::no_such_file_or_directory) {
+            metadata = Metadata{};
+            return {};
+        }
+        return error;
+    };
+
+    Metadata first;
+    FRAGFS_CHECK(!loadOrEmpty(first));
+    FRAGFS_CHECK(!fragfs::appendFile(first, dir.path / "c0", metadataPath));
+    FRAGFS_CHECK(!fragfs::appendFile(first, dir.path / "c1", metadataPath));
+    FRAGFS_CHECK(!fragfs::writeMetadataFile(metadataPath, first));
+
+    Metadata second;
+    FRAGFS_CHECK(!loadOrEmpty(second));
+    FRAGFS_CHECK(!fragfs::appendFile(second, dir.path / "c2", metadataPath));
+    FRAGFS_CHECK(!fragfs::writeMetadataFile(metadataPath, second));
+
+    std::error_code error;
+    auto file = LogicalFile::open(metadataPath, error);
+    FRAGFS_CHECK(file.has_value());
+    FRAGFS_CHECK_EQ(readRange(*file, 0, 12), std::string("AAAABBBBBBCC"));
+}
+
 FRAGFS_TEST_MAIN

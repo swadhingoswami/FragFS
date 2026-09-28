@@ -15,20 +15,26 @@ void printUsage(std::FILE* out) {
         "FragFS - zero-copy logical file aggregation\n"
         "\n"
         "Usage:\n"
+        "  fragfs <logical-file> <chunk> [<chunk>...]\n"
+        "                                        Map physical chunks into a logical file\n"
         "  fragfs <command> [arguments]\n"
         "\n"
+        "The first form is the primary operation: the chunks are mapped, in order,\n"
+        "into the logical file without copying any data. Running it again appends\n"
+        "more chunks.\n"
+        "\n"
         "Commands:\n"
-        "  create <output> <file>...             Create a logical file from physical files\n"
         "  info <logical-file>                   Show metadata for a logical file\n"
         "  read <logical-file> <offset> <size> [--output <file>]\n"
         "                                        Read a logical byte range\n"
-        "  append <logical-file> <file>          Append a physical file to the mapping\n"
+        "  append <logical-file> <file>          Append one physical file\n"
         "  add <logical-file> <file> --physical-offset <n> --length <n>\n"
         "                                        Add a partial physical range\n"
         "  remove <logical-file> <id>            Remove a fragment by id\n"
         "  verify <logical-file>                 Validate metadata and mappings\n"
         "  benchmark <logical-file> [--iterations <n>]\n"
         "                                        Benchmark logical reads\n"
+        "  create <output> <file>...             Alias for the primary form\n"
         "  mount <logical-file> <dir>            Mount through a filesystem adapter\n"
         "  unmount <dir>                         Unmount a FragFS mount point\n"
         "\n"
@@ -95,7 +101,6 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    std::fprintf(stderr, "fragfs: unknown command '%s'\n\n", command.c_str());
-    printUsage(stderr);
-    return 2;
+    // Anything else is the primary form: `fragfs <logical-file> <chunk>...`.
+    return fragfs::cli::runAggregate(args);
 }
