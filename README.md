@@ -1,5 +1,11 @@
 # FragFS
 
+[![build](https://github.com/swadhingoswami/FragFS/actions/workflows/build.yml/badge.svg)](https://github.com/swadhingoswami/FragFS/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-lightgrey.svg)
+![Tests](https://img.shields.io/badge/tests-14%20suites-brightgreen.svg)
+
 > A zero-copy logical file aggregation layer: map many physical files into one
 > logical file, transfer the pieces, and reassemble the original — with **no
 > data copy during mapping** and **reflink-based zero-copy reassembly** where
