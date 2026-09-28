@@ -316,9 +316,10 @@ filesystems, are reused after deletion, and change under ordinary copy/restore
 operations, which would produce false alarms.
 
 **Consequence:** a file replaced by a different file of the same-or-larger size
-is not detected; the mapping silently follows the new bytes. Stronger identity
-(device+inode, size, mtime, or a checksum) is a documented future enhancement,
-traded against portability and cost.
+is not detected by `read`; the mapping silently follows the new bytes. Stronger
+identity is layered on top by `verify`: format v3 records device, inode, size,
+and mtime per fragment and flags modifications/replacements (see D26). `read`
+itself stays path-based and pays no `fstat`.
 
 ## D21 — Concurrent reads without locks around the read path
 
@@ -404,3 +405,25 @@ the metadata because the metadata is replaced by `rename`, which would
 invalidate a lock held on the old inode. A crashed writer releases its lock
 automatically when the process exits. Cross-host locking still depends on the
 filesystem's `flock` support (NFS is the usual caveat).
+
+## D26 — Physical identity recorded per fragment (format v3)
+
+**Decision:** format version 3 stores, for each fragment, the physical file's
+device, inode, size, and modification time as observed when the fragment was
+recorded. `verify` compares the recorded identity against the current file and
+reports a fragment as changed when they differ. Metadata with no identity is
+still written as v2 and read back unchanged.
+
+**Why:** path-only references cannot tell "the file is still the same" from
+"the path now points at something else." Recording size and mtime detects
+modification; device and inode detect replacement (delete-and-recreate). This
+turns a silent correctness hazard — reading the wrong bytes through a stale
+mapping — into an explicit `physical_file_changed` report.
+
+**Consequence:** metadata grows by 36 bytes per fragment. `verify` becomes
+strict: touching a fragment's mtime marks the logical file INVALID, which is
+the honest answer ("the bytes may have changed") at the cost of some noise for
+metadata-only touches. Identity is best-effort across filesystems: inode
+semantics vary, and copies/restores legitimately change it, which is exactly
+the trade-off D20 described. `read` is unchanged and still relies on the
+physical-range bounds check rather than paying an `fstat` per read.

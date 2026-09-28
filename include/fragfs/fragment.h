@@ -1,5 +1,7 @@
 #pragma once
 
+#include <fragfs/file_identity.h>
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -30,6 +32,11 @@ struct Fragment {
     // Path to the physical file. May be relative or absolute; path resolution
     // policy is decided by the metadata layer, not here.
     std::string path;
+
+    // Identity of the physical file when the fragment was recorded. Absent for
+    // metadata produced before identity tracking (format v1/v2) and for
+    // fragments built by hand.
+    std::optional<FileIdentity> identity;
 
     // logicalStart + length, or std::nullopt if that would overflow uint64_t.
     std::optional<uint64_t> logicalEnd() const;

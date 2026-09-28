@@ -15,21 +15,24 @@ struct FragmentVerification {
     std::size_t fragmentIndex = 0;
     bool fileExists = false;
     bool rangeInBounds = false;
+    bool changed = false; // identity (size/mtime/device/inode) differs
     uint64_t physicalFileSize = 0;
     std::error_code error;
 };
 
 // Full verification report. `valid()` is true only when the metadata is
-// structurally sound and every fragment's physical file exists with a range
-// that lies inside it.
+// structurally sound and every fragment's physical file exists, has a range
+// inside it, and still matches the identity recorded at creation time.
 struct VerifyReport {
     std::error_code metadataError;
     std::vector<FragmentVerification> fragments;
     std::size_t missingFiles = 0;
     std::size_t invalidRanges = 0;
+    std::size_t changedFiles = 0;
 
     bool valid() const {
-        return !metadataError && missingFiles == 0 && invalidRanges == 0;
+        return !metadataError && missingFiles == 0 && invalidRanges == 0 &&
+               changedFiles == 0;
     }
 };
 

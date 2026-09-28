@@ -123,6 +123,30 @@ std::error_code PosixFile::size(uint64_t& out) const {
     return {};
 }
 
+std::error_code PosixFile::identity(FileIdentity& out) const {
+    if (descriptor_ < 0) {
+        return std::make_error_code(std::errc::bad_file_descriptor);
+    }
+    struct stat info {};
+    if (::fstat(descriptor_, &info) != 0) {
+        return lastError();
+    }
+    if (info.st_size < 0) {
+        return std::make_error_code(std::errc::io_error);
+    }
+
+    out.device = static_cast<uint64_t>(info.st_dev);
+    out.inode = static_cast<uint64_t>(info.st_ino);
+    out.size = static_cast<uint64_t>(info.st_size);
+    out.mtimeSeconds = static_cast<int64_t>(info.st_mtime);
+#if defined(__APPLE__)
+    out.mtimeNanoseconds = static_cast<uint32_t>(info.st_mtimespec.tv_nsec);
+#else
+    out.mtimeNanoseconds = static_cast<uint32_t>(info.st_mtim.tv_nsec);
+#endif
+    return {};
+}
+
 std::error_code PosixFile::pread(uint64_t offset,
                                  void* buffer,
                                  std::size_t size,

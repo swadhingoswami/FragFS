@@ -11,9 +11,9 @@
 namespace fragfs {
 namespace {
 
-// Stats a physical file and returns its size. Distinguishes a missing path, a
-// non-regular path, and an unreadable file.
-std::error_code statPhysicalFile(const std::filesystem::path& file, uint64_t& size) {
+// Stats a physical file and returns its identity (size, device, inode, mtime).
+// Distinguishes a missing path, a non-regular path, and an unreadable file.
+std::error_code statPhysicalFile(const std::filesystem::path& file, FileIdentity& out) {
     std::error_code error;
     const std::filesystem::file_status status = std::filesystem::status(file, error);
     if (error == std::errc::no_such_file_or_directory) {
@@ -33,7 +33,7 @@ std::error_code statPhysicalFile(const std::filesystem::path& file, uint64_t& si
     if (!opened) {
         return error ? error : make_error_code(ErrorCode::io_error);
     }
-    return opened->size(size);
+    return opened->identity(out);
 }
 
 std::error_code validateResult(const Metadata& metadata) {
@@ -49,17 +49,18 @@ CreateResult buildMetadata(const std::vector<std::filesystem::path>& files,
 
     uint64_t logicalStart = 0;
     for (const std::filesystem::path& file : files) {
-        uint64_t size = 0;
-        result.error = statPhysicalFile(file, size);
+        FileIdentity identity;
+        result.error = statPhysicalFile(file, identity);
         if (result.error) {
             return result;
         }
-        if (size == 0) {
+        if (identity.size == 0) {
             result.error = make_error_code(ErrorCode::empty_physical_file);
             return result;
         }
 
-        const std::optional<uint64_t> logicalEnd = checkedAdd(logicalStart, size);
+        const std::optional<uint64_t> logicalEnd =
+            checkedAdd(logicalStart, identity.size);
         if (!logicalEnd.has_value()) {
             result.error = make_error_code(ErrorCode::invalid_range);
             return result;
@@ -68,8 +69,9 @@ CreateResult buildMetadata(const std::vector<std::filesystem::path>& files,
         Fragment fragment;
         fragment.logicalStart = logicalStart;
         fragment.physicalStart = 0;
-        fragment.length = size;
+        fragment.length = identity.size;
         fragment.path = storePath(file, baseDirectory).string();
+        fragment.identity = identity;
         result.metadata.fragments.push_back(std::move(fragment));
 
         logicalStart = *logicalEnd;
@@ -83,16 +85,17 @@ CreateResult buildMetadata(const std::vector<std::filesystem::path>& files,
 std::error_code appendFile(Metadata& metadata,
                            const std::filesystem::path& file,
                            const std::filesystem::path& metadataPath) {
-    uint64_t size = 0;
-    std::error_code error = statPhysicalFile(file, size);
+    FileIdentity identity;
+    std::error_code error = statPhysicalFile(file, identity);
     if (error) {
         return error;
     }
-    if (size == 0) {
+    if (identity.size == 0) {
         return make_error_code(ErrorCode::empty_physical_file);
     }
 
-    const std::optional<uint64_t> logicalEnd = checkedAdd(metadata.logicalSize, size);
+    const std::optional<uint64_t> logicalEnd =
+        checkedAdd(metadata.logicalSize, identity.size);
     if (!logicalEnd.has_value()) {
         return make_error_code(ErrorCode::invalid_range);
     }
@@ -100,8 +103,9 @@ std::error_code appendFile(Metadata& metadata,
     Fragment fragment;
     fragment.logicalStart = metadata.logicalSize;
     fragment.physicalStart = 0;
-    fragment.length = size;
+    fragment.length = identity.size;
     fragment.path = storePath(file, baseDirectoryFor(metadataPath)).string();
+    fragment.identity = identity;
     metadata.fragments.push_back(std::move(fragment));
     metadata.logicalSize = *logicalEnd;
 
@@ -118,10 +122,12 @@ std::error_code addRange(Metadata& metadata,
     }
 
     uint64_t fileSize = 0;
-    std::error_code error = statPhysicalFile(file, fileSize);
+    FileIdentity identity;
+    std::error_code error = statPhysicalFile(file, identity);
     if (error) {
         return error;
     }
+    fileSize = identity.size;
 
     const std::optional<uint64_t> physicalEnd = checkedAdd(physicalOffset, length);
     if (!physicalEnd.has_value()) {
@@ -141,6 +147,7 @@ std::error_code addRange(Metadata& metadata,
     fragment.physicalStart = physicalOffset;
     fragment.length = length;
     fragment.path = storePath(file, baseDirectoryFor(metadataPath)).string();
+    fragment.identity = identity;
     metadata.fragments.push_back(std::move(fragment));
     metadata.logicalSize = *logicalEnd;
 

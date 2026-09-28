@@ -27,6 +27,7 @@ enum class ErrorCode {
     // Physical file verification
     missing_physical_file,
     physical_range_out_of_bounds,
+    physical_file_changed,
     not_a_regular_file,
     empty_physical_file,
     fragment_index_out_of_range,

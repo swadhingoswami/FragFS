@@ -3,12 +3,15 @@
 
 #include <fragfs/error.h>
 #include <fragfs/metadata.h>
+#include <fragfs/operations.h>
 #include <fragfs/verify.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <system_error>
 #include <utility>
 
 namespace {
@@ -92,6 +95,46 @@ TEST_CASE("verification reports structurally invalid metadata first") {
     FRAGFS_CHECK_EQ(report.metadataError,
                     fragfs::make_error_code(ErrorCode::overlapping_fragments));
     FRAGFS_CHECK_EQ(report.fragments.size(), std::size_t{0});
+}
+
+TEST_CASE("verification passes when recorded identity matches") {
+    const TempDir dir;
+    writeTextFile(dir.path / "a.dat", "AAAA");
+
+    const std::filesystem::path metadataPath = dir.path / "combined.ff.meta";
+    const fragfs::CreateResult built =
+        fragfs::buildMetadata({dir.path / "a.dat"}, metadataPath);
+    FRAGFS_CHECK(built.ok());
+
+    const fragfs::VerifyReport report =
+        fragfs::verifyMetadata(built.metadata, dir.path);
+
+    FRAGFS_CHECK(report.valid());
+    FRAGFS_CHECK_EQ(report.changedFiles, std::size_t{0});
+}
+
+TEST_CASE("verification detects a physical file modified after creation") {
+    const TempDir dir;
+    writeTextFile(dir.path / "a.dat", "AAAA");
+
+    const std::filesystem::path metadataPath = dir.path / "combined.ff.meta";
+    const fragfs::CreateResult built =
+        fragfs::buildMetadata({dir.path / "a.dat"}, metadataPath);
+    FRAGFS_CHECK(built.ok());
+
+    // Move the file's mtime forward; the recorded identity no longer matches.
+    std::error_code error;
+    const auto future =
+        std::filesystem::file_time_type::clock::now() + std::chrono::hours(24);
+    std::filesystem::last_write_time(dir.path / "a.dat", future, error);
+    FRAGFS_CHECK(!error);
+
+    const fragfs::VerifyReport report =
+        fragfs::verifyMetadata(built.metadata, dir.path);
+
+    FRAGFS_CHECK(!report.valid());
+    FRAGFS_CHECK_EQ(report.changedFiles, std::size_t{1});
+    FRAGFS_CHECK(report.fragments[0].changed);
 }
 
 FRAGFS_TEST_MAIN

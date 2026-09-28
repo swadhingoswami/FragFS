@@ -74,11 +74,34 @@ VerifyReport verifyMetadata(const Metadata& metadata,
         if (!physicalEnd.has_value()) {
             verification.error = make_error_code(ErrorCode::invalid_range);
             ++report.invalidRanges;
-        } else if (*physicalEnd > fileSize) {
+            report.fragments.push_back(verification);
+            continue;
+        }
+        if (*physicalEnd > fileSize) {
             verification.error = make_error_code(ErrorCode::physical_range_out_of_bounds);
             ++report.invalidRanges;
-        } else {
-            verification.rangeInBounds = true;
+            report.fragments.push_back(verification);
+            continue;
+        }
+        verification.rangeInBounds = true;
+
+        // If the metadata recorded the file's identity, compare it now. A
+        // difference in device/inode means the file was replaced; a difference
+        // in size or mtime means it was modified.
+        if (fragment.identity.has_value()) {
+            FileIdentity current;
+            error = opened->identity(current);
+            if (error) {
+                verification.error = error;
+                ++report.invalidRanges;
+                report.fragments.push_back(verification);
+                continue;
+            }
+            if (current != *fragment.identity) {
+                verification.changed = true;
+                verification.error = make_error_code(ErrorCode::physical_file_changed);
+                ++report.changedFiles;
+            }
         }
 
         report.fragments.push_back(verification);

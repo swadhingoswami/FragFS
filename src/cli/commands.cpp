@@ -381,6 +381,7 @@ int runVerify(const std::vector<std::string>& args) {
     std::printf("Logical size   : %s\n", formatBytes(metadata->logicalSize).c_str());
     std::printf("Missing files  : %zu\n", report.missingFiles);
     std::printf("Invalid ranges : %zu\n", report.invalidRanges);
+    std::printf("Changed files  : %zu\n", report.changedFiles);
     std::printf("\nStatus: %s\n", report.valid() ? "VALID" : "INVALID");
 
     if (!report.valid()) {

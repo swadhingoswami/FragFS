@@ -23,7 +23,8 @@ inline constexpr std::array<char, 8> kMetadataMagic = {
 // Version history:
 //   1  header: magic, version, flags, logical_size, fragment_count (32 bytes)
 //   2  adds a CRC-32 of the fragment region to the header (36 bytes)
-inline constexpr uint32_t kMetadataFormatVersion = 2;
+//   3  adds per-fragment physical identity (device, inode, size, mtime)
+inline constexpr uint32_t kMetadataFormatVersion = 3;
 inline constexpr uint32_t kMetadataMinVersion = 1;
 
 // Upper bound on fragment count, enforced when parsing untrusted metadata so a

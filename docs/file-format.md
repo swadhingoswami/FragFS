@@ -22,21 +22,28 @@ never contains the bytes themselves.
 
 All integers are unsigned little-endian.
 
-### Header (version 2, 36 bytes)
+### Header (versions 2 and 3, 36 bytes)
 
 ```text
 offset  size  field
 ------  ----  -----
 0       8     magic           ASCII "FRAGFSM1"
-8       4     format_version  uint32 (currently 2)
+8       4     format_version  uint32 (currently 3)
 12      4     flags           uint32 (reserved, 0)
 16      8     logical_size    uint64
 24      8     fragment_count  uint64
 32      4     checksum        uint32 (CRC-32 of the fragment region)
 ```
 
-Version 1 used a 32-byte header with no `checksum` field. The decoder still
-reads version-1 files; the writer always emits version 2.
+Version history:
+
+- **v1** used a 32-byte header with no `checksum` field.
+- **v2** added the `checksum`.
+- **v3** keeps the v2 header and adds per-fragment physical identity.
+
+The decoder reads all three versions. The writer emits **v3 when every fragment
+carries identity**, otherwise **v2** (which cannot represent it); it never emits
+v1.
 
 ### Fragment records (repeated `fragment_count` times)
 
@@ -50,8 +57,22 @@ size  field
 ...   path            UTF-8 bytes, no NUL terminator
 ```
 
-Each record's minimum size is 28 bytes. Paths are variable length, so records
-are not fixed-stride; the decoder walks them sequentially.
+Version 3 appends a 36-byte identity block to each record:
+
+```text
+size  field
+----  -----
+8     device          uint64
+8     inode           uint64
+8     size            uint64
+8     mtime_sec       int64
+4     mtime_nsec      uint32
+```
+
+Each record's minimum size is therefore 28 bytes (v1/v2) or 64 bytes (v3).
+Paths are variable length, so records are not fixed-stride; the decoder walks
+them sequentially. Identity is what lets `verify` detect a fragment whose file
+has been modified (size/mtime) or replaced (device/inode) since creation.
 
 ## Validation on decode
 

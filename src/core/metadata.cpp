@@ -11,13 +11,18 @@ namespace {
 // On-disk layout:
 //   header v1: magic[8] | version u32 | flags u32 | logical_size u64 | count u64
 //   header v2: v1 fields | checksum u32 (CRC-32 of the fragment region)
+//   header v3: same as v2; fragments additionally carry physical identity
 //   fragment:  logical_start u64 | physical_start u64 | length u64
 //              | path_length u32 | path bytes
+//              | [v3 only] device u64 | inode u64 | size u64
+//                          | mtime_sec i64 | mtime_nsec u32
 // All integers are little-endian regardless of host endianness.
 
 constexpr std::size_t kHeaderSizeV1 = 32;
-constexpr std::size_t kHeaderSizeV2 = 36;
-constexpr std::size_t kFragmentFixedSize = 28; // 8 + 8 + 8 + 4
+constexpr std::size_t kHeaderSizeV2 = 36; // v2 and v3 share a header layout
+constexpr std::size_t kFragmentFixedSize = 28;       // v1/v2 fragment
+constexpr std::size_t kIdentitySize = 36;            // v3 identity block
+constexpr std::size_t kFragmentFixedSizeV3 = kFragmentFixedSize + kIdentitySize;
 
 void appendU32(std::vector<std::byte>& out, uint32_t value) {
     for (int i = 0; i < 4; ++i) {
@@ -58,6 +63,7 @@ ValidationResult failure(ErrorCode code, std::size_t fragmentIndex, std::string 
 std::error_code decodeFragments(const std::byte* data,
                                 std::size_t size,
                                 std::size_t headerSize,
+                                bool withIdentity,
                                 uint64_t logicalSize,
                                 uint64_t fragmentCount,
                                 Metadata& metadata) {
@@ -65,8 +71,10 @@ std::error_code decodeFragments(const std::byte* data,
         return make_error_code(ErrorCode::invalid_fragment_count);
     }
 
+    const std::size_t minimum = withIdentity ? kFragmentFixedSizeV3
+                                             : kFragmentFixedSize;
     const std::size_t remaining = size - headerSize;
-    if (fragmentCount > remaining / kFragmentFixedSize) {
+    if (fragmentCount > remaining / minimum) {
         return make_error_code(ErrorCode::truncated_metadata);
     }
 
@@ -91,6 +99,20 @@ std::error_code decodeFragments(const std::byte* data,
         }
         fragment.path.assign(reinterpret_cast<const char*>(data + cursor), pathLength);
         cursor += pathLength;
+
+        if (withIdentity) {
+            if (size - cursor < kIdentitySize) {
+                return make_error_code(ErrorCode::truncated_metadata);
+            }
+            FileIdentity identity;
+            identity.device = readU64(data + cursor);
+            identity.inode = readU64(data + cursor + 8);
+            identity.size = readU64(data + cursor + 16);
+            identity.mtimeSeconds = static_cast<int64_t>(readU64(data + cursor + 24));
+            identity.mtimeNanoseconds = readU32(data + cursor + 32);
+            cursor += kIdentitySize;
+            fragment.identity = identity;
+        }
 
         metadata.fragments.push_back(std::move(fragment));
     }
@@ -150,6 +172,17 @@ ValidationResult Metadata::validate() const {
 }
 
 std::vector<std::byte> serializeMetadata(const Metadata& metadata) {
+    // Version 3 is used only when every fragment carries physical identity;
+    // otherwise the data is written as version 2 (which cannot represent it).
+    // This keeps hand-built metadata and pre-identity files round-tripping.
+    bool withIdentity = true;
+    for (const Fragment& fragment : metadata.fragments) {
+        if (!fragment.identity.has_value()) {
+            withIdentity = false;
+            break;
+        }
+    }
+
     // Encode the fragment region first so its checksum can go in the header.
     std::vector<std::byte> body;
     body.reserve(metadata.fragments.size() * kFragmentFixedSize);
@@ -161,6 +194,14 @@ std::vector<std::byte> serializeMetadata(const Metadata& metadata) {
         for (const char byte : fragment.path) {
             body.push_back(static_cast<std::byte>(byte));
         }
+        if (withIdentity) {
+            const FileIdentity& identity = *fragment.identity;
+            appendU64(body, identity.device);
+            appendU64(body, identity.inode);
+            appendU64(body, identity.size);
+            appendU64(body, static_cast<uint64_t>(identity.mtimeSeconds));
+            appendU32(body, identity.mtimeNanoseconds);
+        }
     }
 
     const uint32_t checksum = crc32(body.data(), body.size());
@@ -170,7 +211,7 @@ std::vector<std::byte> serializeMetadata(const Metadata& metadata) {
     for (const char byte : kMetadataMagic) {
         out.push_back(static_cast<std::byte>(byte));
     }
-    appendU32(out, kMetadataFormatVersion);
+    appendU32(out, withIdentity ? 3u : 2u);
     appendU32(out, 0); // reserved flags, must be zero
     appendU64(out, metadata.logicalSize);
     appendU64(out, static_cast<uint64_t>(metadata.fragments.size()));
@@ -201,10 +242,12 @@ DecodeResult deserializeMetadata(const std::byte* data, std::size_t size) {
 
     const uint32_t version = readU32(data + 8);
     std::size_t headerSize = 0;
+    bool withIdentity = false;
     if (version == 1) {
         headerSize = kHeaderSizeV1;
-    } else if (version == 2) {
+    } else if (version == 2 || version == 3) {
         headerSize = kHeaderSizeV2;
+        withIdentity = (version == 3);
     } else {
         result.error = make_error_code(ErrorCode::unsupported_version);
         return result;
@@ -221,17 +264,17 @@ DecodeResult deserializeMetadata(const std::byte* data, std::size_t size) {
     Metadata metadata;
     // Decode first: this performs the bounds checks that distinguish a
     // truncated buffer from a merely corrupt one, without trusting any field.
-    const std::error_code decodeError =
-        decodeFragments(data, size, headerSize, logicalSize, fragmentCount, metadata);
+    const std::error_code decodeError = decodeFragments(
+        data, size, headerSize, withIdentity, logicalSize, fragmentCount, metadata);
     if (decodeError) {
         result.error = decodeError;
         return result;
     }
 
-    // Version 2 protects the fragment region with a checksum. It is verified
-    // after decoding (which is bounds-safe) so that truncation is reported as
-    // truncation rather than as a checksum failure.
-    if (version == 2) {
+    // Versions 2 and 3 protect the fragment region with a checksum. It is
+    // verified after decoding (which is bounds-safe) so that truncation is
+    // reported as truncation rather than as a checksum failure.
+    if (version >= 2) {
         const uint32_t expected = readU32(data + 32);
         const uint32_t actual = crc32(data + headerSize, size - headerSize);
         if (actual != expected) {

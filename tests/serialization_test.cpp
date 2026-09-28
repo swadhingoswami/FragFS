@@ -180,6 +180,33 @@ TEST_CASE("a corrupted fragment region is caught by the checksum") {
                     fragfs::make_error_code(ErrorCode::checksum_mismatch));
 }
 
+TEST_CASE("physical identity is written as version 3 and survives a round trip") {
+    Metadata metadata;
+    metadata.logicalSize = 4;
+    Fragment fragment = frag(0, 0, 4, "a.dat");
+    fragfs::FileIdentity identity;
+    identity.device = 11;
+    identity.inode = 22;
+    identity.size = 4;
+    identity.mtimeSeconds = 1234567;
+    identity.mtimeNanoseconds = 890;
+    fragment.identity = identity;
+    metadata.fragments = {fragment};
+
+    const std::vector<std::byte> encoded = fragfs::serializeMetadata(metadata);
+    FRAGFS_CHECK_EQ(std::to_integer<unsigned char>(encoded[8]),
+                    static_cast<unsigned char>(3));
+
+    const DecodeResult result = decode(encoded);
+    FRAGFS_CHECK(result.ok());
+    FRAGFS_CHECK(result.metadata.fragments[0].identity.has_value());
+    FRAGFS_CHECK_EQ(result.metadata.fragments[0].identity->device, uint64_t{11});
+    FRAGFS_CHECK_EQ(result.metadata.fragments[0].identity->inode, uint64_t{22});
+    FRAGFS_CHECK_EQ(result.metadata.fragments[0].identity->size, uint64_t{4});
+    FRAGFS_CHECK_EQ(result.metadata.fragments[0].identity->mtimeSeconds, int64_t{1234567});
+    FRAGFS_CHECK_EQ(result.metadata.fragments[0].identity->mtimeNanoseconds, uint32_t{890});
+}
+
 TEST_CASE("version 1 metadata without a checksum is still readable") {
     // Hand-build a minimal version-1 empty-metadata buffer.
     std::vector<std::byte> encoded(32, std::byte{0});

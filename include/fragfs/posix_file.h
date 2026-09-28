@@ -1,5 +1,7 @@
 #pragma once
 
+#include <fragfs/file_identity.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -61,6 +63,9 @@ public:
 
     // Current file size in bytes.
     std::error_code size(uint64_t& out) const;
+
+    // Identity of the file (size, device, inode, mtime) via fstat.
+    std::error_code identity(FileIdentity& out) const;
 
     // Reads up to `size` bytes at `offset` (independent of any file position,
     // so it is safe under concurrent use). `bytesRead` receives the count; a
