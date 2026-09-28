@@ -97,8 +97,8 @@ TEST_CASE("the encoded size matches the documented layout") {
     metadata.logicalSize = 10;
     metadata.fragments = {frag(0, 0, 10, "a"), frag(10, 0, 10, "bb")};
 
-    // 32-byte header + 2 * 28-byte fixed records + 1 + 2 path bytes.
-    FRAGFS_CHECK_EQ(fragfs::serializeMetadata(metadata).size(), std::size_t{91});
+    // 36-byte header + 2 * 28-byte fixed records + 1 + 2 path bytes.
+    FRAGFS_CHECK_EQ(fragfs::serializeMetadata(metadata).size(), std::size_t{95});
 }
 
 TEST_CASE("the header starts with the expected magic and version") {
@@ -159,11 +159,42 @@ TEST_CASE("a path length larger than the remaining buffer is rejected") {
     metadata.fragments = {frag(0, 0, 10, "part.dat")};
 
     std::vector<std::byte> encoded = fragfs::serializeMetadata(metadata);
-    // path_length lives at offset 32 + 24 = 56 in the first fragment.
-    writeU32(encoded, 56, 0xFFFFFFFFu);
+    // path_length lives at offset 36 + 24 = 60 in the first fragment.
+    writeU32(encoded, 60, 0xFFFFFFFFu);
 
     FRAGFS_CHECK_EQ(decode(encoded).error,
                     fragfs::make_error_code(ErrorCode::truncated_metadata));
+}
+
+TEST_CASE("a corrupted fragment region is caught by the checksum") {
+    Metadata metadata;
+    metadata.logicalSize = 10;
+    metadata.fragments = {frag(0, 0, 10, "a.dat")};
+
+    std::vector<std::byte> encoded = fragfs::serializeMetadata(metadata);
+    // First path byte is at 36 + 28 = 64; flipping it keeps the record
+    // structurally valid, so only the checksum can detect the damage.
+    encoded[64] = static_cast<std::byte>('Z');
+
+    FRAGFS_CHECK_EQ(decode(encoded).error,
+                    fragfs::make_error_code(ErrorCode::checksum_mismatch));
+}
+
+TEST_CASE("version 1 metadata without a checksum is still readable") {
+    // Hand-build a minimal version-1 empty-metadata buffer.
+    std::vector<std::byte> encoded(32, std::byte{0});
+    for (std::size_t i = 0; i < fragfs::kMetadataMagic.size(); ++i) {
+        encoded[i] = static_cast<std::byte>(fragfs::kMetadataMagic[i]);
+    }
+    writeU32(encoded, 8, 1);  // version 1
+    writeU32(encoded, 12, 0); // flags
+    writeU64(encoded, 16, 0); // logical size
+    writeU64(encoded, 24, 0); // fragment count
+
+    const DecodeResult result = decode(encoded);
+    FRAGFS_CHECK(result.ok());
+    FRAGFS_CHECK_EQ(result.metadata.logicalSize, uint64_t{0});
+    FRAGFS_CHECK_EQ(result.metadata.fragments.size(), std::size_t{0});
 }
 
 TEST_CASE("an excessive fragment count is rejected before allocating") {

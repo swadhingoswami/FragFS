@@ -12,6 +12,7 @@ const char* messageFor(ErrorCode code) {
         case ErrorCode::unsupported_version:       return "unsupported metadata format version";
         case ErrorCode::truncated_metadata:        return "metadata is truncated";
         case ErrorCode::invalid_fragment_count:    return "invalid fragment count";
+        case ErrorCode::checksum_mismatch:         return "metadata checksum mismatch";
         case ErrorCode::invalid_range:             return "fragment range is invalid";
         case ErrorCode::empty_path:                return "fragment path is empty";
         case ErrorCode::overlapping_fragments:     return "fragments overlap";

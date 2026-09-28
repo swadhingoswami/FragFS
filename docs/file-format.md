@@ -22,17 +22,21 @@ never contains the bytes themselves.
 
 All integers are unsigned little-endian.
 
-### Header (32 bytes)
+### Header (version 2, 36 bytes)
 
 ```text
 offset  size  field
 ------  ----  -----
 0       8     magic           ASCII "FRAGFSM1"
-8       4     format_version  uint32 (currently 1)
-12      4     flags           uint32 (reserved, 0 in version 1)
+8       4     format_version  uint32 (currently 2)
+12      4     flags           uint32 (reserved, 0)
 16      8     logical_size    uint64
 24      8     fragment_count  uint64
+32      4     checksum        uint32 (CRC-32 of the fragment region)
 ```
+
+Version 1 used a 32-byte header with no `checksum` field. The decoder still
+reads version-1 files; the writer always emits version 2.
 
 ### Fragment records (repeated `fragment_count` times)
 
@@ -53,19 +57,29 @@ are not fixed-stride; the decoder walks them sequentially.
 
 The decoder rejects, in order:
 
-1. a buffer shorter than the 32-byte header (`truncated_metadata`);
+1. a buffer shorter than the 12 bytes needed for magic + version
+   (`truncated_metadata`);
 2. a wrong magic (`invalid_magic`);
 3. an unknown `format_version` (`unsupported_version`);
-4. `fragment_count > kMaxFragments` (`invalid_fragment_count`);
-5. a `fragment_count` that cannot fit in the remaining buffer
+4. a buffer shorter than the version's header (`truncated_metadata`);
+5. `fragment_count > kMaxFragments` (`invalid_fragment_count`);
+6. a `fragment_count` that cannot fit in the remaining buffer
    (`truncated_metadata`);
-6. a truncated fragment record or a `path_length` past the end of the buffer
+7. a truncated fragment record or a `path_length` past the end of the buffer
    (`truncated_metadata`);
-7. structural invalidity of the decoded metadata — overlapping/gapped
+8. for version 2, a fragment region whose CRC-32 does not match the header
+   (`checksum_mismatch`);
+9. structural invalidity of the decoded metadata — overlapping/gapped
    fragments, overflowing ranges, empty paths, or a `logical_size` that does
    not match (`overlapping_fragments`, `gap_between_fragments`,
    `invalid_range`, `empty_path`, `logical_size_mismatch`).
 
+The checksum is verified *after* the bounds-checked decode, so a truncated file
+is reported as truncation rather than as a checksum failure. The checksum covers
+the fragment region only; header fields are constrained by the explicit checks
+above (magic, version, count bounds) and by structural validation
+(`logical_size` must equal the last fragment's end).
+
 Trailing bytes after the last fragment are currently ignored. A future version
-may use them for extension data or an integrity checksum; the `flags` field is
-reserved for the same purpose.
+may use them for extension data; the `flags` field is reserved for the same
+purpose.

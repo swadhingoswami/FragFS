@@ -12,9 +12,11 @@ std::filesystem::path metadataPathFor(const std::filesystem::path& logicalPath) 
     return std::filesystem::path(logicalPath.string() + ".meta");
 }
 
-LogicalFile::LogicalFile(Metadata metadata, std::filesystem::path baseDirectory)
+LogicalFile::LogicalFile(Metadata metadata, std::filesystem::path baseDirectory,
+                         std::size_t maxOpenFiles)
     : metadata_(std::move(metadata)),
       baseDirectory_(std::move(baseDirectory)),
+      maxOpenFiles_(maxOpenFiles == 0 ? 1 : maxOpenFiles),
       cacheMutex_(std::make_unique<std::mutex>()) {}
 
 LogicalFile::LogicalFile(LogicalFile&&) noexcept = default;
@@ -22,7 +24,8 @@ LogicalFile& LogicalFile::operator=(LogicalFile&&) noexcept = default;
 LogicalFile::~LogicalFile() = default;
 
 std::optional<LogicalFile> LogicalFile::open(const std::filesystem::path& metadataPath,
-                                             std::error_code& error) {
+                                             std::error_code& error,
+                                             std::size_t maxOpenFiles) {
     error.clear();
 
     Metadata metadata;
@@ -36,11 +39,34 @@ std::optional<LogicalFile> LogicalFile::open(const std::filesystem::path& metada
         baseDirectory = ".";
     }
 
-    return LogicalFile(std::move(metadata), std::move(baseDirectory));
+    return LogicalFile(std::move(metadata), std::move(baseDirectory), maxOpenFiles);
+}
+
+std::size_t LogicalFile::openFileCount() const {
+    const std::lock_guard<std::mutex> lock(*cacheMutex_);
+    return openFiles_.size();
+}
+
+void LogicalFile::touch(const std::string& key) {
+    const auto found = openFiles_.find(key);
+    if (found == openFiles_.end()) {
+        return;
+    }
+    lruOrder_.erase(found->second.order);
+    lruOrder_.push_front(key);
+    found->second.order = lruOrder_.begin();
+}
+
+void LogicalFile::evictIfNeeded() {
+    while (openFiles_.size() >= maxOpenFiles_) {
+        const std::string victim = lruOrder_.back();
+        lruOrder_.pop_back();
+        openFiles_.erase(victim);
+    }
 }
 
 std::error_code LogicalFile::acquirePhysicalFile(const std::string& storedPath,
-                                                 PosixFile*& file) {
+                                                 std::shared_ptr<PosixFile>& file) {
     const std::filesystem::path resolved =
         resolvePhysicalPath(storedPath, baseDirectory_);
     const std::string key = resolved.string();
@@ -49,7 +75,8 @@ std::error_code LogicalFile::acquirePhysicalFile(const std::string& storedPath,
 
     const auto existing = openFiles_.find(key);
     if (existing != openFiles_.end()) {
-        file = &existing->second;
+        file = existing->second.file;
+        touch(key);
         return {};
     }
 
@@ -62,8 +89,12 @@ std::error_code LogicalFile::acquirePhysicalFile(const std::string& storedPath,
         return error ? error : make_error_code(ErrorCode::io_error);
     }
 
-    const auto inserted = openFiles_.emplace(key, std::move(*opened));
-    file = &inserted.first->second;
+    evictIfNeeded();
+
+    auto shared = std::make_shared<PosixFile>(std::move(*opened));
+    lruOrder_.push_front(key);
+    openFiles_.emplace(key, OpenFile{shared, lruOrder_.begin()});
+    file = std::move(shared);
     return {};
 }
 
@@ -88,7 +119,7 @@ std::error_code LogicalFile::read(uint64_t logicalOffset,
     for (const ReadStep& step : plan.steps) {
         const Fragment& fragment = metadata_.fragments[step.fragmentIndex];
 
-        PosixFile* physical = nullptr;
+        std::shared_ptr<PosixFile> physical;
         std::error_code error = acquirePhysicalFile(fragment.path, physical);
         if (error) {
             return error;

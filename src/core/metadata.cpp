@@ -1,5 +1,7 @@
 #include <fragfs/metadata.h>
 
+#include <fragfs/crc32.h>
+
 #include <cstddef>
 #include <utility>
 
@@ -7,12 +9,14 @@ namespace fragfs {
 namespace {
 
 // On-disk layout:
-//   header:   magic[8] | version u32 | flags u32 | logical_size u64 | count u64
-//   fragment: logical_start u64 | physical_start u64 | length u64
-//             | path_length u32 | path bytes
+//   header v1: magic[8] | version u32 | flags u32 | logical_size u64 | count u64
+//   header v2: v1 fields | checksum u32 (CRC-32 of the fragment region)
+//   fragment:  logical_start u64 | physical_start u64 | length u64
+//              | path_length u32 | path bytes
 // All integers are little-endian regardless of host endianness.
 
-constexpr std::size_t kHeaderSize = 32;
+constexpr std::size_t kHeaderSizeV1 = 32;
+constexpr std::size_t kHeaderSizeV2 = 36;
 constexpr std::size_t kFragmentFixedSize = 28; // 8 + 8 + 8 + 4
 
 void appendU32(std::vector<std::byte>& out, uint32_t value) {
@@ -47,6 +51,51 @@ uint64_t readU64(const std::byte* data) {
 
 ValidationResult failure(ErrorCode code, std::size_t fragmentIndex, std::string detail) {
     return ValidationResult{make_error_code(code), fragmentIndex, std::move(detail)};
+}
+
+// Walks the fragment region starting at `headerSize` and fills `metadata`.
+// Shared by all supported format versions.
+std::error_code decodeFragments(const std::byte* data,
+                                std::size_t size,
+                                std::size_t headerSize,
+                                uint64_t logicalSize,
+                                uint64_t fragmentCount,
+                                Metadata& metadata) {
+    if (fragmentCount > kMaxFragments) {
+        return make_error_code(ErrorCode::invalid_fragment_count);
+    }
+
+    const std::size_t remaining = size - headerSize;
+    if (fragmentCount > remaining / kFragmentFixedSize) {
+        return make_error_code(ErrorCode::truncated_metadata);
+    }
+
+    metadata.logicalSize = logicalSize;
+    metadata.fragments.reserve(static_cast<std::size_t>(fragmentCount));
+
+    std::size_t cursor = headerSize;
+    for (uint64_t i = 0; i < fragmentCount; ++i) {
+        if (size - cursor < kFragmentFixedSize) {
+            return make_error_code(ErrorCode::truncated_metadata);
+        }
+
+        Fragment fragment;
+        fragment.logicalStart = readU64(data + cursor);
+        fragment.physicalStart = readU64(data + cursor + 8);
+        fragment.length = readU64(data + cursor + 16);
+        const uint32_t pathLength = readU32(data + cursor + 24);
+        cursor += kFragmentFixedSize;
+
+        if (pathLength > size - cursor) {
+            return make_error_code(ErrorCode::truncated_metadata);
+        }
+        fragment.path.assign(reinterpret_cast<const char*>(data + cursor), pathLength);
+        cursor += pathLength;
+
+        metadata.fragments.push_back(std::move(fragment));
+    }
+
+    return {};
 }
 
 } // namespace
@@ -101,26 +150,32 @@ ValidationResult Metadata::validate() const {
 }
 
 std::vector<std::byte> serializeMetadata(const Metadata& metadata) {
-    std::vector<std::byte> out;
-    out.reserve(kHeaderSize + metadata.fragments.size() * kFragmentFixedSize);
+    // Encode the fragment region first so its checksum can go in the header.
+    std::vector<std::byte> body;
+    body.reserve(metadata.fragments.size() * kFragmentFixedSize);
+    for (const Fragment& fragment : metadata.fragments) {
+        appendU64(body, fragment.logicalStart);
+        appendU64(body, fragment.physicalStart);
+        appendU64(body, fragment.length);
+        appendU32(body, static_cast<uint32_t>(fragment.path.size()));
+        for (const char byte : fragment.path) {
+            body.push_back(static_cast<std::byte>(byte));
+        }
+    }
 
+    const uint32_t checksum = crc32(body.data(), body.size());
+
+    std::vector<std::byte> out;
+    out.reserve(kHeaderSizeV2 + body.size());
     for (const char byte : kMetadataMagic) {
         out.push_back(static_cast<std::byte>(byte));
     }
     appendU32(out, kMetadataFormatVersion);
-    appendU32(out, 0); // reserved flags, must be zero in version 1
+    appendU32(out, 0); // reserved flags, must be zero
     appendU64(out, metadata.logicalSize);
     appendU64(out, static_cast<uint64_t>(metadata.fragments.size()));
-
-    for (const Fragment& fragment : metadata.fragments) {
-        appendU64(out, fragment.logicalStart);
-        appendU64(out, fragment.physicalStart);
-        appendU64(out, fragment.length);
-        appendU32(out, static_cast<uint32_t>(fragment.path.size()));
-        for (const char byte : fragment.path) {
-            out.push_back(static_cast<std::byte>(byte));
-        }
-    }
+    appendU32(out, checksum);
+    out.insert(out.end(), body.begin(), body.end());
 
     return out;
 }
@@ -128,7 +183,9 @@ std::vector<std::byte> serializeMetadata(const Metadata& metadata) {
 DecodeResult deserializeMetadata(const std::byte* data, std::size_t size) {
     DecodeResult result;
 
-    if (data == nullptr || size < kHeaderSize) {
+    // The magic plus the version field occupy the first 12 bytes in every
+    // version, so they can be validated before choosing a parser.
+    if (data == nullptr || size < 12) {
         result.error = make_error_code(ErrorCode::truncated_metadata);
         return result;
     }
@@ -142,57 +199,45 @@ DecodeResult deserializeMetadata(const std::byte* data, std::size_t size) {
         }
     }
 
-    if (readU32(data + 8) != kMetadataFormatVersion) {
+    const uint32_t version = readU32(data + 8);
+    std::size_t headerSize = 0;
+    if (version == 1) {
+        headerSize = kHeaderSizeV1;
+    } else if (version == 2) {
+        headerSize = kHeaderSizeV2;
+    } else {
         result.error = make_error_code(ErrorCode::unsupported_version);
+        return result;
+    }
+
+    if (size < headerSize) {
+        result.error = make_error_code(ErrorCode::truncated_metadata);
         return result;
     }
 
     const uint64_t logicalSize = readU64(data + 16);
     const uint64_t fragmentCount = readU64(data + 24);
 
-    // Reject absurd counts before allocating.
-    if (fragmentCount > kMaxFragments) {
-        result.error = make_error_code(ErrorCode::invalid_fragment_count);
-        return result;
-    }
-
-    // A count is only plausible if the buffer could physically contain that
-    // many minimum-sized fragments; otherwise the buffer is truncated.
-    const std::size_t remaining = size - kHeaderSize;
-    if (fragmentCount > remaining / kFragmentFixedSize) {
-        result.error = make_error_code(ErrorCode::truncated_metadata);
-        return result;
-    }
-
     Metadata metadata;
-    metadata.logicalSize = logicalSize;
-    metadata.fragments.reserve(static_cast<std::size_t>(fragmentCount));
+    // Decode first: this performs the bounds checks that distinguish a
+    // truncated buffer from a merely corrupt one, without trusting any field.
+    const std::error_code decodeError =
+        decodeFragments(data, size, headerSize, logicalSize, fragmentCount, metadata);
+    if (decodeError) {
+        result.error = decodeError;
+        return result;
+    }
 
-    std::size_t cursor = kHeaderSize;
-    for (uint64_t i = 0; i < fragmentCount; ++i) {
-        // The fast check above is only a lower bound: earlier fragments may
-        // carry paths that consume space the fixed-size estimate ignored. The
-        // per-fragment check is the authoritative bounds test.
-        if (size - cursor < kFragmentFixedSize) {
-            result.error = make_error_code(ErrorCode::truncated_metadata);
+    // Version 2 protects the fragment region with a checksum. It is verified
+    // after decoding (which is bounds-safe) so that truncation is reported as
+    // truncation rather than as a checksum failure.
+    if (version == 2) {
+        const uint32_t expected = readU32(data + 32);
+        const uint32_t actual = crc32(data + headerSize, size - headerSize);
+        if (actual != expected) {
+            result.error = make_error_code(ErrorCode::checksum_mismatch);
             return result;
         }
-
-        Fragment fragment;
-        fragment.logicalStart = readU64(data + cursor);
-        fragment.physicalStart = readU64(data + cursor + 8);
-        fragment.length = readU64(data + cursor + 16);
-        const uint32_t pathLength = readU32(data + cursor + 24);
-        cursor += kFragmentFixedSize;
-
-        if (pathLength > size - cursor) {
-            result.error = make_error_code(ErrorCode::truncated_metadata);
-            return result;
-        }
-        fragment.path.assign(reinterpret_cast<const char*>(data + cursor), pathLength);
-        cursor += pathLength;
-
-        metadata.fragments.push_back(std::move(fragment));
     }
 
     const ValidationResult validation = metadata.validate();

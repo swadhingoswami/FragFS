@@ -15,6 +15,7 @@ enum class ErrorCode {
     unsupported_version,
     truncated_metadata,
     invalid_fragment_count,
+    checksum_mismatch,
 
     // Structural validation
     invalid_range,

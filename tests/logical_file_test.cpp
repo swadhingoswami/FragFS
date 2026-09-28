@@ -261,6 +261,28 @@ TEST_CASE("an empty logical file reads zero bytes") {
     FRAGFS_CHECK_EQ(bytesRead, std::size_t{0});
 }
 
+TEST_CASE("the descriptor cache evicts least-recently-used files") {
+    const TempDir dir;
+    writeTextFile(dir.path / "A.dat", "AAAA");
+    writeTextFile(dir.path / "B.dat", "BBBBBB");
+    writeTextFile(dir.path / "C.dat", "CC");
+    writeMetadataFile(dir.path / "combined.ff.meta", concatenationFixture());
+
+    std::error_code error;
+    auto file = LogicalFile::open(dir.path / "combined.ff.meta", error, 2);
+    FRAGFS_CHECK(file.has_value());
+
+    // A read across all three fragments must stay correct even though at most
+    // two descriptors may be open at once.
+    FRAGFS_CHECK_EQ(readRange(*file, 0, 12), std::string("AAAABBBBBBCC"));
+    FRAGFS_CHECK(file->openFileCount() <= 2);
+
+    for (int i = 0; i < 10; ++i) {
+        FRAGFS_CHECK_EQ(readRange(*file, 0, 12), std::string("AAAABBBBBBCC"));
+    }
+    FRAGFS_CHECK(file->openFileCount() <= 2);
+}
+
 TEST_CASE("the metadata sidecar path is derived from the logical path") {
     FRAGFS_CHECK_EQ(fragfs::metadataPathFor("combined.ff").string(),
                     std::string("combined.ff.meta"));

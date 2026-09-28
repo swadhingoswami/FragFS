@@ -180,8 +180,9 @@ and attaches the resulting `fragfs` binaries to a GitHub Release.
 
 The core engine and all non-mounting commands are implemented: `create`,
 `info`, `read`, `append`, `add`, `remove`, `verify`, and `benchmark`. Metadata
-updates are crash-safe. A filesystem adapter (`mount`/`unmount`) is not yet
-implemented.
+updates are crash-safe; metadata format v2 adds a CRC-32 and still reads v1
+files. Fragment lookup is binary search and the descriptor cache is LRU-bounded.
+A filesystem adapter (`mount`/`unmount`) is not yet implemented.
 
 ## Roadmap
 
@@ -202,6 +203,9 @@ implemented.
 [x] Concurrency
 [x] Performance benchmarks
 [x] Linux/macOS CI (+ sanitizers) and tagged releases
+[x] Binary-search fragment lookup
+[x] LRU-bounded descriptor cache
+[x] Metadata CRC-32 (format v2, reads v1)
 [~] FUSE (Linux) / user-space filesystem (macOS) adapter — design only,
     see docs/fuse-adapter.md
 ```

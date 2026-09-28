@@ -20,17 +20,28 @@ ReadPlan Mapper::plan(uint64_t logicalOffset, uint64_t size) const {
     uint64_t remaining = std::min(size, available);
     uint64_t current = logicalOffset;
 
-    // Linear scan for the fragment containing the first byte. Fragments are
-    // ordered by logicalStart, so this can become a binary search later
-    // without changing the interface.
-    std::size_t index = 0;
-    while (index < metadata_.fragments.size() &&
-           !metadata_.fragments[index].containsLogicalOffset(current)) {
-        ++index;
+    // Fragments are ordered by logicalStart and tile the logical space, so the
+    // containing fragment is the last one whose logicalStart is <= current.
+    // upper_bound finds the first fragment starting after current; one step
+    // back is the candidate.
+    const auto after = std::upper_bound(
+        metadata_.fragments.begin(), metadata_.fragments.end(), current,
+        [](uint64_t value, const Fragment& fragment) {
+            return value < fragment.logicalStart;
+        });
+
+    if (after == metadata_.fragments.begin()) {
+        // current precedes the first fragment: only possible with invalid
+        // metadata (which does not start at logical offset 0).
+        plan.error = make_error_code(ErrorCode::invalid_range);
+        return plan;
     }
-    if (index == metadata_.fragments.size()) {
-        // Unreachable for valid metadata (which tiles the logical space); a
-        // defensive error for metadata that was not validated.
+    std::size_t index =
+        static_cast<std::size_t>(after - metadata_.fragments.begin()) - 1;
+
+    if (!metadata_.fragments[index].containsLogicalOffset(current)) {
+        // The candidate does not actually contain current: a gap in metadata
+        // that was not validated.
         plan.error = make_error_code(ErrorCode::invalid_range);
         return plan;
     }

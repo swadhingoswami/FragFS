@@ -334,3 +334,53 @@ grow on first use), so that alone is locked.
 **Consequence:** readers scale with the underlying device, not with a lock.
 The returned descriptor pointer is stable (node-based container), so it stays
 valid after the lock is released. Writer coordination remains out of scope.
+
+## D22 — Binary-search fragment lookup
+
+**Decision:** `Mapper::plan` locates the first fragment with
+`std::upper_bound` over the ordered `logicalStart` values rather than a linear
+scan.
+
+**Why:** fragments are stored ordered and non-overlapping, so the containing
+fragment can be found in O(log n). A logical file with many fragments (a
+split archive, a log rotation) would otherwise pay O(n) on every read, and
+random reads are the common case.
+
+**Consequence:** lookup no longer depends on the number of fragments. The
+interface is unchanged; correctness for gaps is preserved by an explicit
+`containsLogicalOffset` check on the candidate.
+
+## D23 — LRU-bounded descriptor cache
+
+**Decision:** `LogicalFile` keeps at most `maxOpenFiles` (default 64) physical
+files open, evicting the least recently used. Cache entries hold
+`shared_ptr<PosixFile>`, and `read` holds a `shared_ptr` for the duration of
+each `pread`.
+
+**Why:** lazy opening without a bound would eventually exhaust
+`RLIMIT_NOFILE` for a logical file with thousands of fragments. Eviction keeps
+the descriptor count bounded. The `shared_ptr` is what makes eviction safe
+under concurrency: evicting a file only removes it from the cache; an in-flight
+`pread` keeps it alive until it finishes, so no pointer dangles.
+
+**Consequence:** a workload that cycles through more fragments than the cache
+size re-opens files, trading syscalls for a bounded descriptor count. The limit
+is configurable through `LogicalFile::open`.
+
+## D24 — Metadata checksum with backward-compatible versioning
+
+**Decision:** format version 2 adds a CRC-32 of the fragment region to the
+header. The writer emits version 2; the decoder reads both version 1 (no
+checksum) and version 2, and rejects any other version.
+
+**Why:** a checksum turns silent corruption (a flipped bit, a bad sector) into a
+detected error (`checksum_mismatch`) instead of a wrong mapping. Making the
+change a new *version* rather than an incompatible edit demonstrates the point
+of versioning: old files keep working, and the format can evolve without a flag
+day.
+
+**Consequence:** the checksum is verified after the bounds-checked decode, so
+truncation is reported as truncation and corruption as `checksum_mismatch`. CRC-32
+detects accidental damage, not deliberate tampering; it is an integrity check,
+not a security mechanism. The checksum covers the fragment region, while header
+fields are constrained by explicit validation.

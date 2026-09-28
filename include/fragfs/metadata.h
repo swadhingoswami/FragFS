@@ -19,7 +19,12 @@ inline constexpr std::array<char, 8> kMetadataMagic = {
 
 // On-disk layout version. Bumped whenever the byte layout changes; a parser
 // rejects versions it does not understand rather than guessing.
-inline constexpr uint32_t kMetadataFormatVersion = 1;
+//
+// Version history:
+//   1  header: magic, version, flags, logical_size, fragment_count (32 bytes)
+//   2  adds a CRC-32 of the fragment region to the header (36 bytes)
+inline constexpr uint32_t kMetadataFormatVersion = 2;
+inline constexpr uint32_t kMetadataMinVersion = 1;
 
 // Upper bound on fragment count, enforced when parsing untrusted metadata so a
 // corrupt count cannot trigger a huge allocation.

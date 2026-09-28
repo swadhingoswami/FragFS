@@ -212,4 +212,59 @@ TEST_CASE("an offset that falls in no fragment is reported as invalid") {
                     fragfs::make_error_code(fragfs::ErrorCode::invalid_range));
 }
 
+TEST_CASE("binary search finds the right fragment among many") {
+    // 1000 fragments of 10 bytes each; fragment i maps physical offset
+    // 1000*i.
+    Metadata metadata;
+    for (uint64_t i = 0; i < 1000; ++i) {
+        metadata.fragments.push_back(frag(i * 10, i * 1000, 10));
+    }
+    metadata.logicalSize = 10000;
+    FRAGFS_CHECK(metadata.validate().ok());
+
+    const Mapper mapper(metadata);
+
+    // First fragment.
+    {
+        const ReadPlan plan = mapper.plan(0, 1);
+        FRAGFS_CHECK(plan.ok());
+        FRAGFS_CHECK_EQ(plan.steps[0].fragmentIndex, std::size_t{0});
+        FRAGFS_CHECK_EQ(plan.steps[0].physicalOffset, uint64_t{0});
+    }
+    // Exact start of a middle fragment.
+    {
+        const ReadPlan plan = mapper.plan(5000, 1);
+        FRAGFS_CHECK(plan.ok());
+        FRAGFS_CHECK_EQ(plan.steps[0].fragmentIndex, std::size_t{500});
+        FRAGFS_CHECK_EQ(plan.steps[0].physicalOffset, uint64_t{500000});
+    }
+    // Last byte of a fragment.
+    {
+        const ReadPlan plan = mapper.plan(5009, 1);
+        FRAGFS_CHECK(plan.ok());
+        FRAGFS_CHECK_EQ(plan.steps[0].fragmentIndex, std::size_t{500});
+        FRAGFS_CHECK_EQ(plan.steps[0].physicalOffset, uint64_t{500009});
+    }
+    // Last fragment.
+    {
+        const ReadPlan plan = mapper.plan(9999, 1);
+        FRAGFS_CHECK(plan.ok());
+        FRAGFS_CHECK_EQ(plan.steps[0].fragmentIndex, std::size_t{999});
+        FRAGFS_CHECK_EQ(plan.steps[0].physicalOffset, uint64_t{999009});
+    }
+    // A read spanning three fragments.
+    {
+        const ReadPlan plan = mapper.plan(4995, 25);
+        FRAGFS_CHECK(plan.ok());
+        FRAGFS_CHECK_EQ(plan.steps.size(), std::size_t{3});
+        FRAGFS_CHECK_EQ(plan.steps[0].fragmentIndex, std::size_t{499});
+        FRAGFS_CHECK_EQ(plan.steps[0].length, uint64_t{5});
+        FRAGFS_CHECK_EQ(plan.steps[1].fragmentIndex, std::size_t{500});
+        FRAGFS_CHECK_EQ(plan.steps[1].length, uint64_t{10});
+        FRAGFS_CHECK_EQ(plan.steps[2].fragmentIndex, std::size_t{501});
+        FRAGFS_CHECK_EQ(plan.steps[2].length, uint64_t{10});
+        FRAGFS_CHECK_EQ(plan.bytesPlanned, uint64_t{25});
+    }
+}
+
 FRAGFS_TEST_MAIN
