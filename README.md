@@ -30,6 +30,7 @@
 - [CI/CD](#cicd)
 - [Project layout](#project-layout)
 - [Status and roadmap](#status-and-roadmap)
+- [Tags](#tags)
 - [License](#license)
 
 ---
@@ -435,6 +436,16 @@ fragfs/
 ```
 
 ---
+
+## Tags
+
+```text
+#fragfs #zerocopy #zero-copy #logicalfile #logicalfilesystem #fileaggregation
+#filemapping #filesystem #storage #dataintegrity #integrity #checksum #crc32
+#reflink #copyonwrite #cow #posix #pread #pwrite #randomaccess #sparsefile
+#cpp #cpp17 #moderncpp #cmake #cli #commandline #linux #macos #crossplatform
+#systemsprogramming #systems #lowlevel #performance #benchmark #opensource #mit
+```
 
 ## License
 
