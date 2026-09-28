@@ -139,6 +139,27 @@ std::optional<Metadata> loadMetadata(const std::string& command,
     return metadata;
 }
 
+// Refuses to proceed when the chunk names imply a missing chunk. Because the
+// metadata is not shipped with the chunks, the only evidence of a dropped
+// chunk is a gap in the numbering.
+bool rejectMissingChunks(const std::string& command,
+                         const std::vector<std::filesystem::path>& chunks) {
+    const SequenceCheck check = checkChunkSequence(chunks);
+    if (!check.numbered || check.missing.empty()) {
+        return false;
+    }
+
+    std::string list;
+    for (std::size_t i = 0; i < check.missing.size(); ++i) {
+        if (i != 0) {
+            list += ", ";
+        }
+        list += std::to_string(check.missing[i]);
+    }
+    runtimeError(command, "missing chunk(s) in the sequence: " + list);
+    return true;
+}
+
 // Streams a whole logical file into `outputPath`, reading each fragment once
 // and writing the result once. This is the only place data is copied, and only
 // because the caller explicitly asked for a materialized file.
@@ -196,6 +217,14 @@ int runAggregate(const std::vector<std::string>& args) {
     const std::filesystem::path logical = args[0];
     const std::filesystem::path metadataPath = metadataPathFor(logical);
 
+    std::vector<std::filesystem::path> chunks;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        chunks.emplace_back(args[i]);
+    }
+    if (rejectMissingChunks(logical.string(), chunks)) {
+        return 1;
+    }
+
     // Hold the writer lock across load-modify-store so concurrent runs cannot
     // lose each other's chunks.
     std::error_code error;
@@ -220,11 +249,12 @@ int runAggregate(const std::vector<std::string>& args) {
 
     // Append every chunk in the order given. If any chunk is missing or
     // invalid, abort without writing, leaving the previous mapping intact.
-    for (std::size_t i = 1; i < args.size(); ++i) {
-        const std::error_code appendError = appendFile(metadata, args[i], metadataPath);
+    for (const std::filesystem::path& chunk : chunks) {
+        const std::error_code appendError = appendFile(metadata, chunk, metadataPath);
         if (appendError) {
             return runtimeError(logical.string(),
-                                "cannot map '" + args[i] + "': " + appendError.message());
+                                "cannot map '" + chunk.string() + "': " +
+                                    appendError.message());
         }
     }
 
@@ -233,7 +263,7 @@ int runAggregate(const std::vector<std::string>& args) {
         return runtimeError(logical.string(), error.message());
     }
 
-    std::printf("Mapped %zu chunk(s) into %s\n", args.size() - 1, logical.c_str());
+    std::printf("Mapped %zu chunk(s) into %s\n", chunks.size(), logical.c_str());
     std::printf("  fragments   : %zu\n", metadata.fragments.size());
     std::printf("  logical size: %llu bytes\n",
                 static_cast<unsigned long long>(metadata.logicalSize));
@@ -355,6 +385,9 @@ int runGet(const std::vector<std::string>& args) {
     std::vector<std::filesystem::path> chunks;
     for (std::size_t i = 2; i < args.size(); ++i) {
         chunks.emplace_back(args[i]);
+    }
+    if (rejectMissingChunks("get", chunks)) {
+        return 1;
     }
 
     const std::filesystem::path metadataPath = metadataPathFor(original);

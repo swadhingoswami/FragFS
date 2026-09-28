@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -178,6 +179,35 @@ TEST_CASE("aggregate semantics: create on first run, append on the next") {
     auto file = LogicalFile::open(metadataPath, error);
     FRAGFS_CHECK(file.has_value());
     FRAGFS_CHECK_EQ(readRange(*file, 0, 12), std::string("AAAABBBBBBCC"));
+}
+
+TEST_CASE("a gap in the chunk numbering is detected") {
+    const std::vector<std::filesystem::path> chunks = {
+        "bigfile.part000", "bigfile.part001", "bigfile.part003"};
+
+    const fragfs::SequenceCheck check = fragfs::checkChunkSequence(chunks);
+
+    FRAGFS_CHECK(check.numbered);
+    FRAGFS_CHECK_EQ(check.missing.size(), std::size_t{1});
+    FRAGFS_CHECK_EQ(check.missing[0], uint64_t{2});
+}
+
+TEST_CASE("a contiguous numbered sequence reports nothing missing") {
+    const std::vector<std::filesystem::path> chunks = {
+        "swadhin_1.dat", "swadhin_2.dat", "swadhin_3.dat"};
+
+    const fragfs::SequenceCheck check = fragfs::checkChunkSequence(chunks);
+
+    FRAGFS_CHECK(check.numbered);
+    FRAGFS_CHECK_EQ(check.missing.size(), std::size_t{0});
+}
+
+TEST_CASE("unnumbered chunk names are inconclusive") {
+    const std::vector<std::filesystem::path> chunks = {"alpha", "beta", "gamma"};
+
+    const fragfs::SequenceCheck check = fragfs::checkChunkSequence(chunks);
+
+    FRAGFS_CHECK(!check.numbered);
 }
 
 FRAGFS_TEST_MAIN

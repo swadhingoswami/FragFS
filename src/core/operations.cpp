@@ -6,6 +6,7 @@
 #include <fragfs/posix_file.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -51,7 +52,65 @@ std::string zeroPadded(uint64_t value, std::size_t width) {
     return digits;
 }
 
+// Extracts the last run of digits in a file name ("part000" -> 0,
+// "swadhin_1.dat" -> 1). Returns false when the name has no digits.
+bool trailingNumber(const std::filesystem::path& path, uint64_t& out) {
+    const std::string name = path.filename().string();
+
+    std::size_t index = name.size();
+    while (index > 0 &&
+           std::isdigit(static_cast<unsigned char>(name[index - 1])) == 0) {
+        --index;
+    }
+    if (index == 0) {
+        return false;
+    }
+    const std::size_t runEnd = index;
+    while (index > 0 &&
+           std::isdigit(static_cast<unsigned char>(name[index - 1])) != 0) {
+        --index;
+    }
+
+    uint64_t value = 0;
+    for (std::size_t i = index; i < runEnd; ++i) {
+        const uint64_t digit = static_cast<uint64_t>(name[i] - '0');
+        if (value > (UINT64_MAX - digit) / 10) {
+            return false;
+        }
+        value = value * 10 + digit;
+    }
+    out = value;
+    return true;
+}
+
 } // namespace
+
+SequenceCheck checkChunkSequence(const std::vector<std::filesystem::path>& chunks) {
+    SequenceCheck result;
+    if (chunks.empty()) {
+        return result;
+    }
+
+    std::vector<uint64_t> numbers;
+    numbers.reserve(chunks.size());
+    for (const std::filesystem::path& chunk : chunks) {
+        uint64_t value = 0;
+        if (!trailingNumber(chunk, value)) {
+            // If any name lacks a number, the sequence cannot be inferred.
+            return result;
+        }
+        numbers.push_back(value);
+    }
+
+    result.numbered = true;
+    std::sort(numbers.begin(), numbers.end());
+    for (std::size_t i = 1; i < numbers.size(); ++i) {
+        for (uint64_t value = numbers[i - 1] + 1; value < numbers[i]; ++value) {
+            result.missing.push_back(value);
+        }
+    }
+    return result;
+}
 
 CreateResult buildMetadata(const std::vector<std::filesystem::path>& files,
                            const std::filesystem::path& metadataPath) {

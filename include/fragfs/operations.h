@@ -45,6 +45,18 @@ std::error_code addRange(Metadata& metadata,
 // later fragments down by its length. Physical data is untouched.
 std::error_code removeFragment(Metadata& metadata, std::size_t fragmentIndex);
 
+// Result of checking a list of chunk names for a contiguous sequence.
+struct SequenceCheck {
+    bool numbered = false;             // true when every name carried a number
+    std::vector<uint64_t> missing;     // absent indices in the sequence
+};
+
+// Inspects the trailing number of each chunk name (e.g. "part000",
+// "swadhin_1.dat"). When every name is numbered, reports any indices missing
+// from the contiguous run. This is how a dropped chunk (a name the shell glob
+// never produced) is detected before a bad map is written.
+SequenceCheck checkChunkSequence(const std::vector<std::filesystem::path>& chunks);
+
 // Result of splitting a file into chunks.
 struct SplitResult {
     std::error_code error;
