@@ -306,38 +306,42 @@ CRC pass even on the reflink path.
 "concatenate everything" approach against FragFS mapping + reassembly.
 
 ```bash
+# 5 GB total, 5 chunks of 1 GB
+./build/benchmarks/fragfs_benchmark --files 5 --size-mib 1024
+
+# smaller, quicker run
 ./build/benchmarks/fragfs_benchmark --files 8 --size-mib 16
 ```
 
-Representative run (128 MiB total, macOS/arm64, page cache warm):
+Measured on 5 GB (5 chunks of 1 GiB), macOS/arm64:
 
 ```text
 -------------------------------------------------------------
 operation                    normal (copy)    fragfs
 -------------------------------------------------------------
-map / concatenate            0.1650 s         0.0003 s
-data copied (map step)       134217728 B      0 B
-extra storage                134217728 B      604 B
-reassemble                   0.1650 s         0.0420 s
+map / concatenate            5.4618 s         0.0009 s
+data copied (map step)       5368709120 B     0 B
+extra storage                5368709120 B     391 B
+reassemble                   5.4618 s         5.2544 s
 reassembly method            read+write       copy
 -------------------------------------------------------------
 
 Sequential read throughput
-  combined file : 1943.1 MiB/s
-  fragfs logical: 15142.1 MiB/s
-
-Random 4096-byte reads : 1.14 us/read over 20000 reads
+  combined file : 2140.2 MiB/s
+  fragfs logical: 2345.2 MiB/s
 ```
 
 Reading the table:
 
-- **The mapping step copies nothing** and takes microseconds, versus a full copy
-  of the data. Extra storage is a 604-byte manifest, not a second 128 MiB file.
+- **The mapping step copies nothing** and takes under a millisecond, versus a
+  full copy of the data. Extra storage is a 391-byte manifest, not a second
+  5 GB file. That is roughly **6,000x faster** than concatenation.
 - **Reassembly** is where data moves. On this macOS/APFS machine there is no
-  range-clone primitive, so it copies (still a single streaming pass). On
-  Linux + btrfs/XFS the same step reports `reflink (0 copy)`.
-- Sequential reads through FragFS are fast because the mapper issues one
-  `pread` per fragment; the numbers here reflect the page cache.
+  range-clone primitive, so it copies (still a single streaming pass) — hence
+  the near-identical reassembly times. On Linux + btrfs/XFS the same step
+  reports `reflink (0 copy)` and moves no data.
+- Sequential reads through FragFS keep pace with a plain file because the
+  mapper issues one `pread` per fragment.
 
 Cost model:
 
