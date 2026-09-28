@@ -21,17 +21,23 @@ const std::array<uint32_t, 256>& crcTable() {
     return table;
 }
 
-} // namespace
-
-uint32_t crc32(const void* data, std::size_t size) {
-    const auto* bytes = static_cast<const unsigned char*>(data);
+uint32_t updateCrc(uint32_t crc, const unsigned char* bytes, std::size_t size) {
     const std::array<uint32_t, 256>& table = crcTable();
-
-    uint32_t crc = 0xFFFFFFFFu;
     for (std::size_t i = 0; i < size; ++i) {
         crc = table[(crc ^ bytes[i]) & 0xFFu] ^ (crc >> 8);
     }
-    return crc ^ 0xFFFFFFFFu;
+    return crc;
+}
+
+} // namespace
+
+uint32_t crc32(const void* data, std::size_t size) {
+    return updateCrc(0xFFFFFFFFu, static_cast<const unsigned char*>(data), size) ^
+           0xFFFFFFFFu;
+}
+
+void Crc32::update(const void* data, std::size_t size) {
+    state_ = updateCrc(state_, static_cast<const unsigned char*>(data), size);
 }
 
 } // namespace fragfs

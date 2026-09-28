@@ -428,3 +428,29 @@ identity change is reported as a warning, not a hard failure; missing files and
 out-of-range mappings still fail. `read` performs a presence/range pre-check
 (naming any missing chunk) before stitching, and does not require identity to
 match, so a reconstruction never silently omits a fragment.
+
+## D27 — A manifest created at split, and a tiered assembler
+
+**Decision:** `split` writes a binary manifest (format v4) recording the
+original name, size, and one row per chunk with its logical range and CRC-32.
+The manifest travels with the chunks. `get` reads the manifest only (it names
+every chunk) and reassembles using the fastest method the OS offers: a
+copy-on-write reflink range clone where supported, otherwise `copy_file_range`,
+otherwise a pread/pwrite loop. The output is written to a temporary file and
+atomically renamed; `--consume` deletes the chunks only after the result is
+durable.
+
+**Why:** if the manifest is not shipped, the only evidence of a dropped chunk is
+a gap in the numbering — a heuristic. Shipping the manifest makes it the single
+source of truth: every expected chunk is known, so a missing chunk is detected
+exactly, and a per-chunk CRC-32 detects corruption. Using a tiered assembler
+means FragFS never copies when the filesystem can clone: on btrfs/XFS the
+reassembly moves no data at all.
+
+**Consequence:** zero-copy reassembly is available on Linux reflink filesystems
+(btrfs, XFS). On macOS, ext4, tmpfs, and network filesystems no range-clone
+primitive exists, so one copy is unavoidable — a limit of the OS, not of FragFS.
+On a non-reflink filesystem you cannot have a regular file, deleted chunks, and
+zero copy at once; this design chooses a regular file with deleted chunks and
+pays one copy. Verification reads the data, so `--verify` on the reflink path
+trades the zero-copy benefit for integrity.

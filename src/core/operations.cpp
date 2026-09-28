@@ -1,6 +1,7 @@
 #include <fragfs/operations.h>
 
 #include <fragfs/checked_arithmetic.h>
+#include <fragfs/crc32.h>
 #include <fragfs/error.h>
 #include <fragfs/metadata_store.h>
 #include <fragfs/posix_file.h>
@@ -297,6 +298,7 @@ SplitResult splitFile(const std::filesystem::path& input,
         }
 
         uint64_t written = 0;
+        Crc32 crc;
         while (written < thisSize) {
             const std::size_t want = static_cast<std::size_t>(
                 std::min<uint64_t>(buffer.size(), thisSize - written));
@@ -321,10 +323,11 @@ SplitResult splitFile(const std::filesystem::path& input,
                 result.error = make_error_code(ErrorCode::io_error);
                 return result;
             }
+            crc.update(buffer.data(), got);
             written += got;
         }
 
-        result.parts.push_back(partPath);
+        result.parts.push_back(SplitPart{partPath, thisSize, crc.value()});
         offset += thisSize;
     }
 

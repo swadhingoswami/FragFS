@@ -1,6 +1,7 @@
 #include "test_framework.h"
 #include "test_helpers.h"
 
+#include <fragfs/crc32.h>
 #include <fragfs/error.h>
 #include <fragfs/logical_file.h>
 #include <fragfs/metadata_store.h>
@@ -40,11 +41,13 @@ TEST_CASE("split writes consecutive chunks with zero-padded names") {
 
     FRAGFS_CHECK(result.ok());
     FRAGFS_CHECK_EQ(result.parts.size(), std::size_t{3});
-    FRAGFS_CHECK_EQ(result.parts[0].filename().string(), std::string("big.bin.part000"));
-    FRAGFS_CHECK_EQ(result.parts[2].filename().string(), std::string("big.bin.part002"));
-    FRAGFS_CHECK_EQ(readFile(result.parts[0]), std::string("0123"));
-    FRAGFS_CHECK_EQ(readFile(result.parts[1]), std::string("4567"));
-    FRAGFS_CHECK_EQ(readFile(result.parts[2]), std::string("89")); // shorter tail
+    FRAGFS_CHECK_EQ(result.parts[0].path.filename().string(), std::string("big.bin.part000"));
+    FRAGFS_CHECK_EQ(result.parts[2].path.filename().string(), std::string("big.bin.part002"));
+    FRAGFS_CHECK_EQ(readFile(result.parts[0].path), std::string("0123"));
+    FRAGFS_CHECK_EQ(readFile(result.parts[1].path), std::string("4567"));
+    FRAGFS_CHECK_EQ(readFile(result.parts[2].path), std::string("89")); // shorter tail
+    FRAGFS_CHECK_EQ(result.parts[0].checksum, fragfs::crc32("0123", 4));
+    FRAGFS_CHECK_EQ(result.parts[1].checksum, fragfs::crc32("4567", 4));
 }
 
 TEST_CASE("split rejects an empty input") {
@@ -79,8 +82,12 @@ TEST_CASE("splitting then aggregating reconstructs the original") {
     FRAGFS_CHECK(split.ok());
 
     // Map the parts back into a logical file, then read it whole.
+    std::vector<std::filesystem::path> partPaths;
+    for (const fragfs::SplitPart& part : split.parts) {
+        partPaths.push_back(part.path);
+    }
     const std::filesystem::path metadataPath = dir.path / "restored.meta";
-    const fragfs::CreateResult built = fragfs::buildMetadata(split.parts, metadataPath);
+    const fragfs::CreateResult built = fragfs::buildMetadata(partPaths, metadataPath);
     FRAGFS_CHECK(built.ok());
     FRAGFS_CHECK(!fragfs::writeMetadataFile(metadataPath, built.metadata));
 

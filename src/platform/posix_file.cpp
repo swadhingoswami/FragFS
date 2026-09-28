@@ -123,6 +123,19 @@ std::error_code PosixFile::size(uint64_t& out) const {
     return {};
 }
 
+std::error_code PosixFile::truncate(uint64_t size) const {
+    if (descriptor_ < 0) {
+        return std::make_error_code(std::errc::bad_file_descriptor);
+    }
+    if (size > static_cast<uint64_t>(std::numeric_limits<off_t>::max())) {
+        return std::make_error_code(std::errc::value_too_large);
+    }
+    if (::ftruncate(descriptor_, static_cast<off_t>(size)) != 0) {
+        return lastError();
+    }
+    return {};
+}
+
 std::error_code PosixFile::identity(FileIdentity& out) const {
     if (descriptor_ < 0) {
         return std::make_error_code(std::errc::bad_file_descriptor);

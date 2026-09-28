@@ -1,5 +1,6 @@
 #include "commands.h"
 
+#include <fragfs/assemble.h>
 #include <fragfs/error.h>
 #include <fragfs/logical_file.h>
 #include <fragfs/metadata_store.h>
@@ -158,52 +159,6 @@ bool rejectMissingChunks(const std::string& command,
     }
     runtimeError(command, "missing chunk(s) in the sequence: " + list);
     return true;
-}
-
-// Streams a whole logical file into `outputPath`, reading each fragment once
-// and writing the result once. This is the only place data is copied, and only
-// because the caller explicitly asked for a materialized file.
-std::error_code writeLogicalToFile(LogicalFile& file,
-                                   const std::filesystem::path& outputPath) {
-    std::error_code error;
-    auto out = PosixFile::open(
-        outputPath, OpenFlags::Write | OpenFlags::Create | OpenFlags::Truncate,
-        error);
-    if (!out) {
-        return error ? error : make_error_code(ErrorCode::io_error);
-    }
-
-    constexpr std::size_t kChunk = 1024 * 1024;
-    std::vector<char> buffer(kChunk);
-    const uint64_t size = file.logicalSize();
-    uint64_t offset = 0;
-    uint64_t written = 0;
-
-    while (offset < size) {
-        const std::size_t want = static_cast<std::size_t>(
-            std::min<uint64_t>(kChunk, size - offset));
-        std::size_t bytesRead = 0;
-        error = file.read(offset, buffer.data(), want, bytesRead);
-        if (error) {
-            return error;
-        }
-        if (bytesRead == 0) {
-            break;
-        }
-
-        std::size_t put = 0;
-        error = out->pwrite(written, buffer.data(), bytesRead, put);
-        if (error) {
-            return error;
-        }
-        if (put != bytesRead) {
-            return make_error_code(ErrorCode::io_error);
-        }
-        offset += bytesRead;
-        written += put;
-    }
-
-    return out->sync();
 }
 
 } // namespace
@@ -369,60 +324,94 @@ int runSplit(const std::vector<std::string>& args) {
         return runtimeError("split", result.error.message());
     }
 
-    std::printf("Split %s into %zu part(s) of up to %llu bytes\n", input.c_str(),
-                result.parts.size(),
-                static_cast<unsigned long long>(chunkSize));
-    std::printf("  prefix: %s\n", prefix.c_str());
-    return 0;
-}
+    // Build the manifest: one fragment per chunk, each with its CRC-32, plus
+    // the original name. This is what `get` uses to reassemble.
+    const std::filesystem::path metadataPath = metadataPathFor(input);
+    const std::filesystem::path baseDirectory = baseDirectoryFor(metadataPath);
+    Metadata manifest;
+    manifest.originalName = input.filename().string();
 
-int runGet(const std::vector<std::string>& args) {
-    if (args.size() < 3) {
-        return usageError("get", "usage: fragfs get <original> <chunk> [<chunk>...]");
+    uint64_t logicalStart = 0;
+    for (const SplitPart& part : result.parts) {
+        Fragment fragment;
+        fragment.logicalStart = logicalStart;
+        fragment.physicalStart = 0;
+        fragment.length = part.length;
+        fragment.path = storePath(part.path, baseDirectory).string();
+        fragment.checksum = part.checksum;
+        manifest.fragments.push_back(std::move(fragment));
+        logicalStart += part.length;
     }
-
-    const std::filesystem::path original = args[1];
-    std::vector<std::filesystem::path> chunks;
-    for (std::size_t i = 2; i < args.size(); ++i) {
-        chunks.emplace_back(args[i]);
-    }
-    if (rejectMissingChunks("get", chunks)) {
-        return 1;
-    }
-
-    const std::filesystem::path metadataPath = metadataPathFor(original);
-
-    // 1. Build the map (no data is read or written for this).
-    const CreateResult built = buildMetadata(chunks, metadataPath);
-    if (!built.ok()) {
-        return runtimeError("get", built.error.message());
-    }
+    manifest.logicalSize = logicalStart;
 
     std::error_code error;
     std::optional<MetadataLock> lock = MetadataLock::acquire(metadataPath, error);
     if (!lock.has_value()) {
-        return runtimeError("get", "cannot lock '" + metadataPath.string() +
+        return runtimeError("split", "cannot lock '" + metadataPath.string() +
+                                         "': " + error.message());
+    }
+    error = writeMetadataFile(metadataPath, manifest);
+    if (error) {
+        return runtimeError("split", "cannot write '" + metadataPath.string() +
+                                         "': " + error.message());
+    }
+
+    std::printf("Split %s into %zu chunk(s) of up to %llu bytes\n", input.c_str(),
+                result.parts.size(),
+                static_cast<unsigned long long>(chunkSize));
+    std::printf("  prefix  : %s\n", prefix.c_str());
+    std::printf("  manifest: %s\n", metadataPath.c_str());
+    return 0;
+}
+
+int runGet(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        return usageError("get", "usage: fragfs get <original> [--consume] [--verify]");
+    }
+
+    const std::filesystem::path original = args[1];
+    bool consume = false;
+    bool verify = false;
+    for (std::size_t i = 2; i < args.size(); ++i) {
+        if (args[i] == "--consume") {
+            consume = true;
+        } else if (args[i] == "--verify") {
+            verify = true;
+        } else {
+            return usageError("get", "unexpected argument '" + args[i] + "'");
+        }
+    }
+
+    // The manifest created by `split` is the only input: it names every chunk.
+    const std::filesystem::path metadataPath = metadataPathFor(original);
+    Metadata metadata;
+    std::error_code error = readMetadataFile(metadataPath, metadata);
+    if (error) {
+        return runtimeError("get", "cannot read '" + metadataPath.string() +
                                        "': " + error.message());
     }
-    error = writeMetadataFile(metadataPath, built.metadata);
-    if (error) {
-        return runtimeError("get", error.message());
+
+    AssembleOptions options;
+    options.consume = consume;
+    options.verify = verify;
+
+    const AssembleResult result =
+        assemble(metadata, baseDirectoryFor(metadataPath), original, options);
+    if (!result.ok()) {
+        std::string message = result.error.message();
+        if (!result.detail.empty()) {
+            message += " (" + result.detail + ")";
+        }
+        return runtimeError("get", message);
     }
 
-    // 2. Write the original back by reading through the map.
-    auto file = LogicalFile::open(metadataPath, error);
-    if (!file.has_value()) {
-        return runtimeError("get", error.message());
+    std::printf("Wrote %s (%llu bytes) from %zu chunk(s)%s\n", original.c_str(),
+                static_cast<unsigned long long>(metadata.logicalSize),
+                metadata.fragments.size(),
+                result.usedReflink ? " using reflink (zero-copy)" : "");
+    if (consume) {
+        std::printf("  consumed %zu chunk(s)\n", metadata.fragments.size());
     }
-    error = writeLogicalToFile(*file, original);
-    if (error) {
-        return runtimeError("get", error.message());
-    }
-
-    std::printf("Wrote %s (%llu bytes) from %zu chunk(s)\n", original.c_str(),
-                static_cast<unsigned long long>(built.metadata.logicalSize),
-                built.metadata.fragments.size());
-    std::printf("  map: %s\n", metadataPath.c_str());
     return 0;
 }
 
@@ -438,20 +427,27 @@ int runInfo(const std::vector<std::string>& args) {
         return 1;
     }
 
+    if (!metadata->originalName.empty()) {
+        std::printf("Original name: %s\n", metadata->originalName.c_str());
+    }
     std::printf("Logical file : %s\n", args[1].c_str());
     std::printf("Logical size : %llu bytes\n",
                 static_cast<unsigned long long>(metadata->logicalSize));
     std::printf("Fragments    : %zu\n\n", metadata->fragments.size());
 
-    std::printf("%-4s %-28s %-16s %-16s %s\n", "ID", "File", "Logical Start",
-                "Physical Start", "Length");
+    std::printf("%-4s %-28s %-16s %-16s %-10s %s\n", "ID", "File",
+                "Logical Start", "Physical Start", "Length", "CRC32");
     for (std::size_t i = 0; i < metadata->fragments.size(); ++i) {
         const Fragment& fragment = metadata->fragments[i];
-        std::printf("%-4zu %-28s %-16llu %-16llu %llu\n", i,
+        char crc[16] = "-";
+        if (fragment.checksum.has_value()) {
+            std::snprintf(crc, sizeof(crc), "%08x", *fragment.checksum);
+        }
+        std::printf("%-4zu %-28s %-16llu %-16llu %-10llu %s\n", i,
                     fragment.path.c_str(),
                     static_cast<unsigned long long>(fragment.logicalStart),
                     static_cast<unsigned long long>(fragment.physicalStart),
-                    static_cast<unsigned long long>(fragment.length));
+                    static_cast<unsigned long long>(fragment.length), crc);
     }
     return 0;
 }
@@ -707,6 +703,7 @@ int runVerify(const std::vector<std::string>& args) {
     std::printf("Missing files  : %zu\n", report.missingFiles);
     std::printf("Invalid ranges : %zu\n", report.invalidRanges);
     std::printf("Changed files  : %zu\n", report.changedFiles);
+    std::printf("Corrupted files: %zu\n", report.corruptedFiles);
     std::printf("\nStatus: %s\n", report.valid() ? "VALID" : "INVALID");
 
     if (report.valid() && report.changedFiles > 0) {

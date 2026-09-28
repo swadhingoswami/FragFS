@@ -57,18 +57,26 @@ struct SequenceCheck {
 // never produced) is detected before a bad map is written.
 SequenceCheck checkChunkSequence(const std::vector<std::filesystem::path>& chunks);
 
+// One produced chunk.
+struct SplitPart {
+    std::filesystem::path path;
+    uint64_t length = 0;
+    uint32_t checksum = 0; // CRC-32 of the chunk's contents
+};
+
 // Result of splitting a file into chunks.
 struct SplitResult {
     std::error_code error;
-    std::vector<std::filesystem::path> parts;
+    std::vector<SplitPart> parts;
 
     bool ok() const { return !error; }
 };
 
 // Splits `input` into consecutive chunks of `chunkSize` bytes, writing them to
 // "<outputPrefix><index>" (zero-padded, at least 3 digits). The final chunk may
-// be shorter. This physically copies data, because the chunks are new files;
-// the zero-copy step is aggregating them back, not producing them.
+// be shorter. The CRC-32 of each chunk's contents is computed while writing, so
+// the caller can record it in a manifest. This physically copies data, because
+// the chunks are new files; the zero-copy step is reassembling them.
 SplitResult splitFile(const std::filesystem::path& input,
                       const std::filesystem::path& outputPrefix,
                       uint64_t chunkSize);

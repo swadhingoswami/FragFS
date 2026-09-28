@@ -1,10 +1,44 @@
 #include <fragfs/verify.h>
 
+#include <fragfs/crc32.h>
 #include <fragfs/error.h>
 #include <fragfs/metadata_store.h>
 #include <fragfs/posix_file.h>
 
+#include <algorithm>
+#include <cerrno>
+#include <cstdint>
+#include <vector>
+
+#include <unistd.h>
+
 namespace fragfs {
+namespace {
+
+std::error_code checksumRange(int fd, uint64_t offset, uint64_t length,
+                              uint32_t& checksum) {
+    std::vector<char> buffer(1024 * 1024);
+    Crc32 crc;
+    uint64_t done = 0;
+    while (done < length) {
+        const std::size_t want = static_cast<std::size_t>(
+            std::min<uint64_t>(buffer.size(), length - done));
+        const ssize_t got = ::pread(fd, buffer.data(), want,
+                                    static_cast<off_t>(offset + done));
+        if (got < 0) {
+            return std::error_code(errno, std::generic_category());
+        }
+        if (got == 0) {
+            break;
+        }
+        crc.update(buffer.data(), static_cast<std::size_t>(got));
+        done += static_cast<uint64_t>(got);
+    }
+    checksum = crc.value();
+    return {};
+}
+
+} // namespace
 
 VerifyReport verifyMetadata(const Metadata& metadata,
                             const std::filesystem::path& baseDirectory) {
@@ -101,6 +135,26 @@ VerifyReport verifyMetadata(const Metadata& metadata,
                 verification.changed = true;
                 verification.error = make_error_code(ErrorCode::physical_file_changed);
                 ++report.changedFiles;
+            }
+        }
+
+        // If a content checksum was recorded (manifest v4), verify it.
+        if (fragment.checksum.has_value()) {
+            verification.checksumChecked = true;
+            uint32_t actual = 0;
+            error = checksumRange(opened->nativeHandle(), fragment.physicalStart,
+                                  fragment.length, actual);
+            if (error) {
+                verification.error = error;
+                ++report.invalidRanges;
+                report.fragments.push_back(verification);
+                continue;
+            }
+            if (actual == *fragment.checksum) {
+                verification.checksumOk = true;
+            } else {
+                verification.error = make_error_code(ErrorCode::checksum_mismatch);
+                ++report.corruptedFiles;
             }
         }
 

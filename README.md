@@ -1,152 +1,317 @@
 # FragFS
 
-> A zero-copy logical file aggregation layer that maps multiple physical files
-> into a single contiguous logical file.
+> A zero-copy logical file aggregation layer: map many physical files into one
+> logical file, transfer the pieces, and reassemble the original — with **no
+> data copy during mapping** and **reflink-based zero-copy reassembly** where
+> the operating system allows it.
+
+---
+
+## Table of contents
+
+- [What is FragFS?](#what-is-fragfs)
+- [Why](#why)
+- [Core concept](#core-concept)
+- [Architecture](#architecture)
+- [End-to-end workflow](#end-to-end-workflow)
+- [Commands](#commands)
+- [The manifest](#the-manifest)
+- [How reassembly works](#how-reassembly-works)
+- [Reliability guarantees](#reliability-guarantees)
+- [Platform support](#platform-support)
+- [Building and testing](#building-and-testing)
+- [CI/CD](#cicd)
+- [Project layout](#project-layout)
+- [Status and roadmap](#status-and-roadmap)
+- [License](#license)
+
+---
 
 ## What is FragFS?
 
-Large files are frequently split across many physical files: multi-part
-downloads (`part1.dat`, `part2.dat`, ...), database segments, log rotations,
-container layers, or chunks produced by a backup tool. To use them as a single
-stream you normally have to concatenate them:
+Large files get split into pieces — multi-part downloads, transfer chunks,
+backup segments. To use them as one file you normally concatenate, which
+**copies every byte** and doubles the storage.
+
+FragFS represents the same file with **only a mapping** (a *manifest*). The
+bytes stay where they are. The manifest records, for every chunk, which range
+of the original it covers. Reading the original means looking up the range and
+reading that chunk.
 
 ```text
-part1.dat ──┐
-part2.dat ──┼── COPY ──> combined.dat
-part3.dat ──┘
+   Physical chunks                         Logical file (manifest)
+   ┌──────────────┐
+   │ chunk_000    │──┐
+   ├──────────────┤  │   logical [0, 100M)  -> chunk_000
+   │ chunk_001    │──┼─▶ logical [100M,150M) -> chunk_001
+   ├──────────────┤  │   logical [150M,350M) -> chunk_002
+   │ chunk_002    │──┘
+   └──────────────┘
+        (data)                                   (no data)
 ```
 
-That copy is expensive: it doubles the disk footprint, costs time proportional
-to the total size, and can fail halfway through.
+---
 
-FragFS represents the same logical file **without copying any data**. It stores
-only a mapping:
+## Why
+
+- **No duplicate storage.** The physical bytes are never copied to make the
+  logical file.
+- **Instant mapping.** Building the manifest writes only a few hundred bytes,
+  regardless of the data size.
+- **Integrity.** A CRC-32 per chunk detects a missing or corrupted chunk.
+- **Fast reassembly.** On a reflink filesystem the original is reassembled by
+  cloning extents — **no bytes are read or written**.
+- **Portable.** One binary manifest format, Linux and macOS.
+
+---
+
+## Core concept
+
+There are two distinct operations, and it matters which one copies data:
 
 ```text
-Logical file: combined.ff
-
-Logical range        Physical mapping
-0   - 100 MB    ->   part1.dat : 0 - 100 MB
-100 - 150 MB    ->   part2.dat : 0 - 50 MB
-150 - 350 MB    ->   part3.dat : 0 - 200 MB
+   ┌───────────────────────────┐        ┌───────────────────────────┐
+   │        MAPPING            │        │       ASSEMBLY            │
+   │  (build the manifest)     │        │  (produce the original)   │
+   ├───────────────────────────┤        ├───────────────────────────┤
+   │ reads chunk data:   NO    │        │ reflink FS:  no copy      │
+   │ writes chunk data:  NO    │        │ otherwise:   one copy     │
+   │ writes manifest:   yes    │        │ writes output: yes        │
+   └───────────────────────────┘        └───────────────────────────┘
 ```
 
-Every read is translated on the fly:
+The mapping is the zero-copy heart of FragFS. Assembly is where the original
+materialises, and even there FragFS avoids copying when the OS can.
 
-```text
-logical offset -> fragment -> physical file -> physical offset -> pread()
-```
-
-## Why?
-
-- **No duplicate storage.** The physical bytes are never copied.
-- **Instant "concatenation".** Creating a logical file only writes metadata.
-- **Random access.** A read at any logical offset is served by `pread()` on the
-  underlying fragments.
-- **Composable.** A fragment can map a *portion* of a physical file, so FragFS
-  can expose arbitrary byte ranges, not just whole files.
+---
 
 ## Architecture
 
-```text
-              ┌───────────────┐
-              │      CLI      │
-              └───────┬───────┘
-                      │
-              ┌───────▼───────┐
-              │   FragFS Core │
-              │               │
-              │ Metadata      │
-              │ Mapper        │
-              │ LogicalFile   │
-              └───────┬───────┘
-                      │
-              ┌───────▼───────┐
-              │   POSIX I/O   │
-              └───────┬───────┘
-                      │
-                Physical Files
-```
-
-The core is deliberately independent of any filesystem adapter. A future FUSE
-(or macOS user-space filesystem) layer plugs into the same core:
+Strict dependency layering; the core never depends on the CLI or any
+filesystem adapter:
 
 ```text
-              ┌───────────────┐
-              │ FUSE Adapter  │
-              └───────┬───────┘
-                      │
-              ┌───────▼───────┐
-              │   FragFS Core │
-              └───────────────┘
+                         ┌───────────────────────────────┐
+                         │             CLI               │
+                         │  split · get · info · verify  │
+                         │  read · append · add · remove │
+                         └───────────────┬───────────────┘
+                                         │
+                         ┌───────────────▼───────────────┐
+                         │          FragFS Core          │
+                         │                               │
+                         │  Manifest  (metadata, v4)     │
+                         │  Assembler (reflink/copy)     │
+                         │  Mapper    (logical→physical) │
+                         │  Verifier  (presence + CRC)   │
+                         │  Store     (atomic writes)    │
+                         └───────────────┬───────────────┘
+                                         │
+                         ┌───────────────▼───────────────┐
+                         │        Platform I/O           │
+                         │  PosixFile  pread/pwrite      │
+                         │  cloneRange FICLONERANGE      │
+                         │  copyRange  copy_file_range   │
+                         └───────────────┬───────────────┘
+                                         │
+                    ┌──────────┬─────────┴─────────┬──────────┐
+                    ▼          ▼                   ▼          ▼
+                chunk_000   chunk_001   ...    chunk_N-1   chunk_N
 ```
 
-## Example
-
-A large file is split into numbered chunks. After moving the chunks elsewhere,
-map them back into the original — without copying any data:
-
-```bash
-# Split the original into chunks (by size or by count).
-fragfs split big.bin --chunk-size 100MB
-fragfs split big.bin --chunks 8
-
-# Move the chunks anywhere, then map them back into a logical file.
-fragfs original.bin big.bin.part000 big.bin.part001 big.bin.part002
-
-# Running it again appends more chunks.
-fragfs original.bin big.bin.part003
-
-# Check every referenced chunk is present before reconstructing.
-fragfs verify original.bin
-
-# Reconstruct/read the original bytes (fails if any chunk is missing).
-fragfs read original.bin 0 120000000 --output restored.bin
-```
-
-The equivalent long forms are also available:
-
-```bash
-fragfs create original.bin chunk_000 chunk_001
-fragfs append original.bin chunk_002
-fragfs add original.bin video.dat --physical-offset 500000000 --length 100000000
-fragfs remove original.bin 1
-fragfs benchmark original.bin
-```
-
-## Performance
-
-`fragfs` stores a mapping instead of copying, so creating a logical file costs
-a metadata write regardless of the data size. A representative run of the
-benchmark suite (4 files x 4 MiB, macOS/arm64, page cache warm):
+Source files:
 
 ```text
-Creation
-  concatenation : 0.021 s  (16777216 bytes copied)
-  fragfs build  : 0.000200 s
-  fragfs write  : 0.001636 s
-  metadata size : 180 bytes
-  data copied   : 0 bytes
-
-Sequential read throughput
-  concatenated  : 13130.0 MiB/s
-  fragfs logical: 11891.1 MiB/s
+include/fragfs/    fragment.h  metadata.h  mapper.h  logical_file.h
+                   metadata_store.h  operations.h  verify.h  assemble.h
+                   posix_file.h  platform_io.h  crc32.h  error.h
+src/core/          metadata · mapper · logical_file · metadata_store
+                   operations · verify · assemble · crc32 · error
+src/platform/      posix_file · platform_io
+src/cli/           main · commands
 ```
 
-Creation is roughly five orders of magnitude faster and copies no data;
-sequential reads are close to a plain concatenated file because both are
-limited by the same underlying I/O. Run `./build/benchmarks/fragfs_benchmark`
-to reproduce on your own hardware.
+---
 
-## Supported platforms
+## End-to-end workflow
 
-- Linux
-- macOS
+```text
+   SOURCE MACHINE                         DESTINATION MACHINE
+   ──────────────                         ───────────────────
 
-Both are POSIX platforms; FragFS uses a single POSIX implementation. Any
-platform-specific code lives under `src/platform/`.
+   big.dat
+      │
+      │  fragfs split big.dat --chunk-size 100MB
+      ▼
+   ┌──────────┬──────────┬─────┐          ┌──────────┬──────────┬─────┐
+   │ big_000  │ big_001  │ ... │  ─────▶  │ big_000  │ big_001  │ ... │
+   └──────────┴──────────┴─────┘  scp     └──────────┴──────────┴─────┘
+   ┌──────────────────────────┐   (ship   ┌──────────────────────────┐
+   │ big.dat.meta (manifest)  │  both)    │ big.dat.meta (manifest)  │
+   │  original name + size    │  ─────▶   │  original name + size    │
+   │  per chunk: range + CRC  │           │  per chunk: range + CRC  │
+   └──────────────────────────┘           └────────────┬─────────────┘
+                                                       │
+                              fragfs get big.dat ◀─────┘
+                                       │
+                                       ▼
+                                  big.dat   (the original)
+```
 
-## Building
+**Step by step**
+
+```text
+  1. split     reads big.dat once, writes chunks + manifest (CRCs computed)
+  2. transfer  ship the chunks AND the manifest together
+  3. get       read the manifest, check every chunk, reassemble big.dat
+  4. consume   (optional) delete the chunks once big.dat is durable
+```
+
+The manifest is the **single source of truth**: it lists every chunk, so a
+missing chunk is detectable without shipping the data.
+
+---
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `fragfs split <file> --chunk-size <size>` | Split into chunks of a given size (KB/MB/GB) |
+| `fragfs split <file> --chunks <n>` | Split into roughly `n` chunks |
+| `fragfs get <original> [--consume] [--verify]` | Reassemble the original from the manifest |
+| `fragfs info <original>` | Show the manifest (chunks, ranges, CRCs) |
+| `fragfs verify <original>` | Check every chunk exists and its CRC matches |
+| `fragfs read <original> <offset> <size> [--output f]` | Read a logical range |
+| `fragfs <logical> <chunk>...` | Manual mapping (no CRCs) — build a manifest by hand |
+| `fragfs append <logical> <file>` | Add one physical file to a manifest |
+| `fragfs add <logical> <file> --physical-offset N --length M` | Add a partial range |
+| `fragfs remove <logical> <id>` | Remove a fragment |
+| `fragfs benchmark <logical>` | Measure read performance |
+
+---
+
+## The manifest
+
+A compact, versioned binary sidecar named `<original>.meta`, created by `split`
+and shipped with the chunks.
+
+```text
+  header
+  ┌────────┬─────────┬───────┬──────────────┬───────────────┬────────────┐
+  │ magic  │ version │ flags │ original_size│ fragment_count│ checksum   │
+  │  8 B   │   4 B   │  4 B  │     8 B      │      8 B      │    4 B     │
+  └────────┴─────────┴───────┴──────────────┴───────────────┴────────────┘
+  ┌─────────────────────────────┐
+  │ original_name (length + bytes)│
+  └─────────────────────────────┘
+  fragments (repeated)
+  ┌───────────────┬────────────────┬────────┬───────────────┬──────────┐
+  │ logical_start │ physical_start │ length │ path (len+str)│ crc32    │
+  │     8 B       │      8 B       │  8 B   │   variable    │   4 B    │
+  └───────────────┴────────────────┴────────┴───────────────┴──────────┘
+```
+
+- All integers are **little-endian**; no raw C++ structs are written.
+- `version` is checked; unknown versions are rejected.
+- The decoder validates every length against the remaining buffer before use.
+- v1–v3 files remain readable; v4 is written by `split`.
+
+Example (`fragfs info`):
+
+```text
+Original name: swadhin.dat
+Logical file : swadhin.dat
+Logical size : 55 bytes
+Fragments    : 6
+
+ID   File           Logical Start   Physical Start  Length   CRC32
+0    swadhin_000    0               0               10       a3ec1434
+1    swadhin_001    10              0               10       bab8bd00
+2    swadhin_002    20              0               10       e132333a
+...
+```
+
+---
+
+## How reassembly works
+
+`fragfs get` walks the manifest and, for each chunk, uses the **fastest method
+the OS offers**:
+
+```text
+                     for each fragment
+                            │
+              ┌─────────────▼──────────────┐
+              │  reflink supported?        │
+              │  (Linux + btrfs/XFS)       │
+              └───────┬───────────┬────────┘
+                    yes           no
+                      │            │
+          ┌───────────▼──┐   ┌─────▼───────────────┐
+          │ FICLONERANGE │   │ copy_file_range      │
+          │ 0 bytes      │   │ (kernel copy; else   │
+          │ read/written │   │  pread/pwrite loop)  │
+          └──────────────┘   └──────────────────────┘
+                      │            │
+                      └─────┬──────┘
+                            ▼
+                 write to big.dat.tmp
+                 fsync → rename → fsync dir   (atomic)
+                            │
+                    --consume? ──▶ unlink chunks
+```
+
+Order of preference:
+
+```text
+   reflink (0 copy)  >  copy_file_range (1 kernel copy)  >  pread/pwrite (1 copy)
+```
+
+Integrity is checked by default where data is copied; `--verify` forces a
+CRC pass even on the reflink path.
+
+---
+
+## Reliability guarantees
+
+```text
+   ┌────────────────────┬──────────────────────────────────────────────┐
+   │ risk               │ mitigation                                   │
+   ├────────────────────┼──────────────────────────────────────────────┤
+   │ missing chunk      │ manifest lists all chunks; get/verify report │
+   │ corrupt chunk      │ CRC-32 per chunk, checked during assembly    │
+   │ half-written file  │ assemble to .tmp, then atomic rename         │
+   │ crash mid-update   │ manifest written tmp → fsync → rename        │
+   │ lost chunks        │ --consume deletes only after output durable  │
+   │ bad metadata       │ bounds-checked decode; versioned format      │
+   │ concurrent writers │ advisory flock over the whole update         │
+   └────────────────────┴──────────────────────────────────────────────┘
+```
+
+---
+
+## Platform support
+
+```text
+   platform / filesystem     reassembly method        data copied   chunks deletable
+   ───────────────────────────────────────────────────────────────────────────────
+   Linux  + btrfs / XFS      FICLONERANGE (reflink)   none          yes
+   Linux  + ext4 / tmpfs     copy_file_range          one copy      yes
+   macOS  + APFS             copy_file_range*         one copy      yes
+   NFS / SMB                 server-side copy         one copy      yes
+```
+
+`*` macOS has no public range-clone API; only whole-file clones, which cannot
+concatenate. So on macOS the copy is unavoidable — a physical limit of the OS,
+not of FragFS.
+
+> **The hard rule:** on a non-reflink filesystem you cannot have all three of
+> *a regular file*, *chunks deleted*, and *zero copy*. FragFS picks "regular
+> file + chunks deleted" and pays one copy where reflink is unavailable.
+
+---
+
+## Building and testing
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -154,17 +319,7 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-## Testing
-
-Each test file compiles into its own executable and is registered with CTest:
-
-```bash
-ctest --test-dir build --output-on-failure          # run everything
-ctest --test-dir build -R fragment_test -V          # one suite, verbose
-./build/tests/fragment_test                          # run a suite directly
-```
-
-For memory-safety and integer-overflow checking, configure a sanitizer build:
+Sanitizer build:
 
 ```bash
 cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DFRAGFS_ENABLE_SANITIZERS=ON
@@ -172,54 +327,57 @@ cmake --build build-asan --parallel
 ctest --test-dir build-asan --output-on-failure
 ```
 
-## Continuous integration and delivery
+Test suites (14): fragment, metadata, serialization, mapper, posix_file,
+logical_file, create, operations, verify, concurrency, writer_lock, split,
+assemble, smoke.
 
-`.github/workflows/build.yml` runs on every push and pull request:
+---
 
-- Release build + full test suite on **Ubuntu** and **macOS**
-- A **Debug build under AddressSanitizer + UndefinedBehaviorSanitizer** on Ubuntu
-
-`.github/workflows/release.yml` provides continuous delivery: pushing a tag
-such as `v0.1.0` builds the tagged revision on Linux and macOS, runs the tests,
-and attaches the resulting `fragfs` binaries to a GitHub Release.
-
-## Current status
-
-The core engine and all non-mounting commands are implemented: `create`,
-`info`, `read`, `append`, `add`, `remove`, `verify`, and `benchmark`. Metadata
-updates are crash-safe and writer-serialised; metadata format v3 records each
-fragment's physical identity (device/inode/size/mtime) so `verify` detects
-changed or replaced files, and v1/v2 files are still readable. Fragment lookup
-is binary search and the descriptor cache is LRU-bounded. A filesystem adapter
-(`mount`/`unmount`) is not yet implemented.
-
-## Roadmap
+## CI/CD
 
 ```text
-[x] Repository + CMake + CLI skeleton
-[x] Fragment data model
-[x] Metadata representation + validation
-[x] Metadata serialization
-[x] Logical-to-physical mapper
-[x] POSIX file abstraction
-[x] Logical reads
-[x] create / info / read commands
-[x] append / add / remove commands
-[x] verify command
-[x] Crash-safe metadata updates
-[x] Partial physical ranges
-[x] Fragment removal
-[x] Concurrency
-[x] Performance benchmarks
-[x] Linux/macOS CI (+ sanitizers) and tagged releases
-[x] Binary-search fragment lookup
-[x] LRU-bounded descriptor cache
-[x] Metadata CRC-32 (format v2, reads v1)
-[x] Concurrent-writer serialisation (advisory lock)
-[x] Physical-file identity (format v3; verify detects change/replacement)
-[~] FUSE (Linux) / user-space filesystem (macOS) adapter — design only,
-    see docs/fuse-adapter.md
+   push / PR  ──▶  GitHub Actions
+                    ├── ubuntu-latest : release build + ctest
+                    ├── macos-latest  : release build + ctest
+                    └── ubuntu-latest : Debug + ASan/UBSan + ctest
+
+   tag v*     ──▶  build on Linux + macOS, attach binaries to a Release
 ```
+
+---
+
+## Project layout
+
+```text
+fragfs/
+├── CMakeLists.txt
+├── include/fragfs/      public headers
+├── src/core/            mapping, manifest, assembly, verification
+├── src/platform/        POSIX I/O, reflink, kernel copy
+├── src/cli/             command-line front end
+├── tests/               unit + integration tests
+├── benchmarks/          performance comparison
+├── docs/                architecture, file format, decisions
+└── .github/workflows/   CI and release
+```
+
+---
+
+## Status and roadmap
+
+```text
+[x] Fragment model, metadata, validation
+[x] Versioned binary manifest (v4) with per-chunk CRC-32
+[x] Logical-to-physical mapper (binary search)
+[x] POSIX file abstraction, logical reads
+[x] split / get / info / verify / read / append / add / remove / benchmark
+[x] Crash-safe writes, writer serialisation, concurrent reads
+[x] Reflink fast path + copy_file_range fallback (tiered assembler)
+[x] Linux/macOS CI (+ sanitizers) and tagged releases
+[ ] Filesystem adapter (mount) — design in docs/fuse-adapter.md
+```
+
+---
 
 ## License
 

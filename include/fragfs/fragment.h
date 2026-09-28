@@ -38,6 +38,11 @@ struct Fragment {
     // fragments built by hand.
     std::optional<FileIdentity> identity;
 
+    // CRC-32 of the physical file's contents. Present when the fragment was
+    // produced by splitting (format v4), absent for mappings built without
+    // reading the data. Used to detect a corrupted chunk during reassembly.
+    std::optional<uint32_t> checksum;
+
     // logicalStart + length, or std::nullopt if that would overflow uint64_t.
     std::optional<uint64_t> logicalEnd() const;
 

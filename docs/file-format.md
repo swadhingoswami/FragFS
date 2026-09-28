@@ -22,28 +22,32 @@ never contains the bytes themselves.
 
 All integers are unsigned little-endian.
 
-### Header (versions 2 and 3, 36 bytes)
+### Header
 
 ```text
 offset  size  field
 ------  ----  -----
 0       8     magic           ASCII "FRAGFSM1"
-8       4     format_version  uint32 (currently 3)
+8       4     format_version  uint32 (currently 4)
 12      4     flags           uint32 (reserved, 0)
 16      8     logical_size    uint64
 24      8     fragment_count  uint64
-32      4     checksum        uint32 (CRC-32 of the fragment region)
+32      4     region_checksum uint32 (CRC-32 of the fragment region)
+36      4     name_length     uint32 (v4 only)
+40      ...   original_name   UTF-8 bytes (v4 only)
 ```
 
 Version history:
 
-- **v1** used a 32-byte header with no `checksum` field.
-- **v2** added the `checksum`.
-- **v3** keeps the v2 header and adds per-fragment physical identity.
+- **v1** — 32-byte header, no region checksum, no identity, no name.
+- **v2** — adds `region_checksum`.
+- **v3** — adds per-fragment physical identity.
+- **v4** — adds the original filename to the header and a per-fragment content
+  CRC-32. Written by `split`; it is the manifest used by `get`.
 
-The decoder reads all three versions. The writer emits **v3 when every fragment
-carries identity**, otherwise **v2** (which cannot represent it); it never emits
-v1.
+The decoder reads all four versions. The writer emits **v4 when every fragment
+carries a content checksum**, otherwise **v3 when every fragment carries
+identity**, otherwise **v2**; it never emits v1.
 
 ### Fragment records (repeated `fragment_count` times)
 
@@ -69,10 +73,19 @@ size  field
 4     mtime_nsec      uint32
 ```
 
-Each record's minimum size is therefore 28 bytes (v1/v2) or 64 bytes (v3).
-Paths are variable length, so records are not fixed-stride; the decoder walks
-them sequentially. Identity is what lets `verify` detect a fragment whose file
-has been modified (size/mtime) or replaced (device/inode) since creation.
+Version 4 appends a 4-byte content checksum to each record:
+
+```text
+size  field
+----  -----
+4     crc32           uint32 (CRC-32 of the chunk's contents)
+```
+
+Each record's minimum size is 28 bytes (v1/v2), 64 bytes (v3), or 32 bytes
+(v4). Paths are variable length, so records are not fixed-stride; the decoder
+walks them sequentially. Identity lets `verify` detect a file modified or
+replaced since creation; the v4 checksum detects a corrupted chunk during
+reassembly.
 
 ## Validation on decode
 
@@ -82,24 +95,24 @@ The decoder rejects, in order:
    (`truncated_metadata`);
 2. a wrong magic (`invalid_magic`);
 3. an unknown `format_version` (`unsupported_version`);
-4. a buffer shorter than the version's header (`truncated_metadata`);
+4. a buffer shorter than the version's header (including the v4 name)
+   (`truncated_metadata`);
 5. `fragment_count > kMaxFragments` (`invalid_fragment_count`);
 6. a `fragment_count` that cannot fit in the remaining buffer
    (`truncated_metadata`);
 7. a truncated fragment record or a `path_length` past the end of the buffer
    (`truncated_metadata`);
-8. for version 2, a fragment region whose CRC-32 does not match the header
+8. for version 2+, a fragment region whose CRC-32 does not match the header
    (`checksum_mismatch`);
 9. structural invalidity of the decoded metadata — overlapping/gapped
    fragments, overflowing ranges, empty paths, or a `logical_size` that does
    not match (`overlapping_fragments`, `gap_between_fragments`,
    `invalid_range`, `empty_path`, `logical_size_mismatch`).
 
-The checksum is verified *after* the bounds-checked decode, so a truncated file
-is reported as truncation rather than as a checksum failure. The checksum covers
-the fragment region only; header fields are constrained by the explicit checks
-above (magic, version, count bounds) and by structural validation
-(`logical_size` must equal the last fragment's end).
+The region checksum is verified *after* the bounds-checked decode, so a
+truncated file is reported as truncation rather than as a checksum failure. It
+covers the fragment region only; header fields are constrained by the explicit
+checks above and by structural validation.
 
 Trailing bytes after the last fragment are currently ignored. A future version
 may use them for extension data; the `flags` field is reserved for the same

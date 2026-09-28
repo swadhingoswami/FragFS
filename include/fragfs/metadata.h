@@ -24,7 +24,8 @@ inline constexpr std::array<char, 8> kMetadataMagic = {
 //   1  header: magic, version, flags, logical_size, fragment_count (32 bytes)
 //   2  adds a CRC-32 of the fragment region to the header (36 bytes)
 //   3  adds per-fragment physical identity (device, inode, size, mtime)
-inline constexpr uint32_t kMetadataFormatVersion = 3;
+//   4  adds the original filename to the header and a per-fragment CRC-32
+inline constexpr uint32_t kMetadataFormatVersion = 4;
 inline constexpr uint32_t kMetadataMinVersion = 1;
 
 // Upper bound on fragment count, enforced when parsing untrusted metadata so a
@@ -49,6 +50,10 @@ struct ValidationResult {
 // encoding, not the in-memory value. They live as constants above and are
 // written by the serializer.
 struct Metadata {
+    // The original file's name, recorded by `split` so the manifest is
+    // self-describing. Empty for hand-built metadata.
+    std::string originalName;
+
     uint64_t logicalSize = 0;
     std::vector<Fragment> fragments;
 

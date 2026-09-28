@@ -64,6 +64,10 @@ public:
     // Current file size in bytes.
     std::error_code size(uint64_t& out) const;
 
+    // Sets the file size (ftruncate). Used to pre-size a destination before
+    // writing or cloning ranges into it.
+    std::error_code truncate(uint64_t size) const;
+
     // Identity of the file (size, device, inode, mtime) via fstat.
     std::error_code identity(FileIdentity& out) const;
 
