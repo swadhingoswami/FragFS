@@ -18,6 +18,7 @@
 - [The manifest](#the-manifest)
 - [How reassembly works](#how-reassembly-works)
 - [Reliability guarantees](#reliability-guarantees)
+- [Performance](#performance)
 - [Platform support](#platform-support)
 - [Building and testing](#building-and-testing)
 - [CI/CD](#cicd)
@@ -289,6 +290,56 @@ CRC pass even on the reflink path.
 ```
 
 ---
+
+## Performance
+
+`benchmarks/fragfs_benchmark` builds N chunks, then compares the traditional
+"concatenate everything" approach against FragFS mapping + reassembly.
+
+```bash
+./build/benchmarks/fragfs_benchmark --files 8 --size-mib 16
+```
+
+Representative run (128 MiB total, macOS/arm64, page cache warm):
+
+```text
+-------------------------------------------------------------
+operation                    normal (copy)    fragfs
+-------------------------------------------------------------
+map / concatenate            0.1650 s         0.0003 s
+data copied (map step)       134217728 B      0 B
+extra storage                134217728 B      604 B
+reassemble                   0.1650 s         0.0420 s
+reassembly method            read+write       copy
+-------------------------------------------------------------
+
+Sequential read throughput
+  combined file : 1943.1 MiB/s
+  fragfs logical: 15142.1 MiB/s
+
+Random 4096-byte reads : 1.14 us/read over 20000 reads
+```
+
+Reading the table:
+
+- **The mapping step copies nothing** and takes microseconds, versus a full copy
+  of the data. Extra storage is a 604-byte manifest, not a second 128 MiB file.
+- **Reassembly** is where data moves. On this macOS/APFS machine there is no
+  range-clone primitive, so it copies (still a single streaming pass). On
+  Linux + btrfs/XFS the same step reports `reflink (0 copy)`.
+- Sequential reads through FragFS are fast because the mapper issues one
+  `pread` per fragment; the numbers here reflect the page cache.
+
+Cost model:
+
+```text
+   mapping cost    = O(number of chunks)      metadata only
+   reflink cost    = O(number of chunks)      metadata only  (btrfs/XFS)
+   copy cost       = O(total bytes)           one pass       (everywhere else)
+```
+
+So fewer, larger chunks make the zero-copy path cheaper, and reflink never
+touches the data at all.
 
 ## Platform support
 
