@@ -1,3 +1,5 @@
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/5a04a879-82d3-4913-a11e-4b4cf17872cf" />
+
 # FragFS
 
 [![build](https://github.com/swadhingoswami/FragFS/actions/workflows/build.yml/badge.svg)](https://github.com/swadhingoswami/FragFS/actions/workflows/build.yml)
