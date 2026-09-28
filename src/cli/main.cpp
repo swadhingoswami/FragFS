@@ -26,6 +26,7 @@ void printUsage(std::FILE* out) {
         "Commands:\n"
         "  split <input> (--chunk-size <size> | --chunks <n>) [--output-prefix <p>]\n"
         "                                        Split a file into chunks (KB/MB/GB)\n"
+        "  get <original> <chunk>...             Rebuild the original from its chunks\n"
         "  info <logical-file>                   Show metadata for a logical file\n"
         "  read <logical-file> <offset> <size> [--output <file>] [--no-check]\n"
         "                                        Read a logical byte range\n"
@@ -75,6 +76,9 @@ int main(int argc, char** argv) {
     }
     if (command == "split") {
         return fragfs::cli::runSplit(args);
+    }
+    if (command == "get") {
+        return fragfs::cli::runGet(args);
     }
     if (command == "info") {
         return fragfs::cli::runInfo(args);

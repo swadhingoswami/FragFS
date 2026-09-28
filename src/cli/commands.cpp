@@ -139,6 +139,52 @@ std::optional<Metadata> loadMetadata(const std::string& command,
     return metadata;
 }
 
+// Streams a whole logical file into `outputPath`, reading each fragment once
+// and writing the result once. This is the only place data is copied, and only
+// because the caller explicitly asked for a materialized file.
+std::error_code writeLogicalToFile(LogicalFile& file,
+                                   const std::filesystem::path& outputPath) {
+    std::error_code error;
+    auto out = PosixFile::open(
+        outputPath, OpenFlags::Write | OpenFlags::Create | OpenFlags::Truncate,
+        error);
+    if (!out) {
+        return error ? error : make_error_code(ErrorCode::io_error);
+    }
+
+    constexpr std::size_t kChunk = 1024 * 1024;
+    std::vector<char> buffer(kChunk);
+    const uint64_t size = file.logicalSize();
+    uint64_t offset = 0;
+    uint64_t written = 0;
+
+    while (offset < size) {
+        const std::size_t want = static_cast<std::size_t>(
+            std::min<uint64_t>(kChunk, size - offset));
+        std::size_t bytesRead = 0;
+        error = file.read(offset, buffer.data(), want, bytesRead);
+        if (error) {
+            return error;
+        }
+        if (bytesRead == 0) {
+            break;
+        }
+
+        std::size_t put = 0;
+        error = out->pwrite(written, buffer.data(), bytesRead, put);
+        if (error) {
+            return error;
+        }
+        if (put != bytesRead) {
+            return make_error_code(ErrorCode::io_error);
+        }
+        offset += bytesRead;
+        written += put;
+    }
+
+    return out->sync();
+}
+
 } // namespace
 
 int runAggregate(const std::vector<std::string>& args) {
@@ -297,6 +343,53 @@ int runSplit(const std::vector<std::string>& args) {
                 result.parts.size(),
                 static_cast<unsigned long long>(chunkSize));
     std::printf("  prefix: %s\n", prefix.c_str());
+    return 0;
+}
+
+int runGet(const std::vector<std::string>& args) {
+    if (args.size() < 3) {
+        return usageError("get", "usage: fragfs get <original> <chunk> [<chunk>...]");
+    }
+
+    const std::filesystem::path original = args[1];
+    std::vector<std::filesystem::path> chunks;
+    for (std::size_t i = 2; i < args.size(); ++i) {
+        chunks.emplace_back(args[i]);
+    }
+
+    const std::filesystem::path metadataPath = metadataPathFor(original);
+
+    // 1. Build the map (no data is read or written for this).
+    const CreateResult built = buildMetadata(chunks, metadataPath);
+    if (!built.ok()) {
+        return runtimeError("get", built.error.message());
+    }
+
+    std::error_code error;
+    std::optional<MetadataLock> lock = MetadataLock::acquire(metadataPath, error);
+    if (!lock.has_value()) {
+        return runtimeError("get", "cannot lock '" + metadataPath.string() +
+                                       "': " + error.message());
+    }
+    error = writeMetadataFile(metadataPath, built.metadata);
+    if (error) {
+        return runtimeError("get", error.message());
+    }
+
+    // 2. Write the original back by reading through the map.
+    auto file = LogicalFile::open(metadataPath, error);
+    if (!file.has_value()) {
+        return runtimeError("get", error.message());
+    }
+    error = writeLogicalToFile(*file, original);
+    if (error) {
+        return runtimeError("get", error.message());
+    }
+
+    std::printf("Wrote %s (%llu bytes) from %zu chunk(s)\n", original.c_str(),
+                static_cast<unsigned long long>(built.metadata.logicalSize),
+                built.metadata.fragments.size());
+    std::printf("  map: %s\n", metadataPath.c_str());
     return 0;
 }
 

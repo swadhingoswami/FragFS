@@ -17,6 +17,10 @@ int runAggregate(const std::vector<std::string>& args);
 
 int runCreate(const std::vector<std::string>& args);
 int runSplit(const std::vector<std::string>& args);
+
+// Reconstructs the original file in one step: `fragfs get <original> <chunk>...`
+// maps the chunks, then writes <original> by reading through the map.
+int runGet(const std::vector<std::string>& args);
 int runInfo(const std::vector<std::string>& args);
 int runRead(const std::vector<std::string>& args);
 int runAppend(const std::vector<std::string>& args);
