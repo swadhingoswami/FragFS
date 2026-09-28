@@ -45,4 +45,20 @@ std::error_code addRange(Metadata& metadata,
 // later fragments down by its length. Physical data is untouched.
 std::error_code removeFragment(Metadata& metadata, std::size_t fragmentIndex);
 
+// Result of splitting a file into chunks.
+struct SplitResult {
+    std::error_code error;
+    std::vector<std::filesystem::path> parts;
+
+    bool ok() const { return !error; }
+};
+
+// Splits `input` into consecutive chunks of `chunkSize` bytes, writing them to
+// "<outputPrefix><index>" (zero-padded, at least 3 digits). The final chunk may
+// be shorter. This physically copies data, because the chunks are new files;
+// the zero-copy step is aggregating them back, not producing them.
+SplitResult splitFile(const std::filesystem::path& input,
+                      const std::filesystem::path& outputPrefix,
+                      uint64_t chunkSize);
+
 } // namespace fragfs

@@ -8,6 +8,7 @@
 #include <fragfs/verify.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -51,6 +52,58 @@ bool parseU64(const std::string& text, uint64_t& value) {
     } catch (const std::exception&) {
         return false;
     }
+}
+
+// Parses a human-readable size such as "512", "100KB", "4MB", "2GB". Suffixes
+// are 1024-based (KB = KiB, MB = MiB, ...) and case-insensitive.
+bool parseSize(const std::string& text, uint64_t& value) {
+    if (text.empty()) {
+        return false;
+    }
+
+    std::size_t digits = 0;
+    while (digits < text.size() &&
+           std::isdigit(static_cast<unsigned char>(text[digits])) != 0) {
+        ++digits;
+    }
+    if (digits == 0) {
+        return false;
+    }
+
+    uint64_t magnitude = 0;
+    for (std::size_t i = 0; i < digits; ++i) {
+        const uint64_t digit = static_cast<uint64_t>(text[i] - '0');
+        if (magnitude > (UINT64_MAX - digit) / 10) {
+            return false;
+        }
+        magnitude = magnitude * 10 + digit;
+    }
+
+    std::string suffix = text.substr(digits);
+    for (char& c : suffix) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+
+    uint64_t multiplier = 1;
+    if (suffix.empty() || suffix == "B") {
+        multiplier = 1;
+    } else if (suffix == "K" || suffix == "KB" || suffix == "KIB") {
+        multiplier = 1024ull;
+    } else if (suffix == "M" || suffix == "MB" || suffix == "MIB") {
+        multiplier = 1024ull * 1024;
+    } else if (suffix == "G" || suffix == "GB" || suffix == "GIB") {
+        multiplier = 1024ull * 1024 * 1024;
+    } else if (suffix == "T" || suffix == "TB" || suffix == "TIB") {
+        multiplier = 1024ull * 1024 * 1024 * 1024;
+    } else {
+        return false;
+    }
+
+    if (magnitude != 0 && multiplier > UINT64_MAX / magnitude) {
+        return false;
+    }
+    value = magnitude * multiplier;
+    return true;
 }
 
 std::string formatBytes(uint64_t bytes) {
@@ -180,6 +233,73 @@ int runCreate(const std::vector<std::string>& args) {
     return 0;
 }
 
+int runSplit(const std::vector<std::string>& args) {
+    if (args.size() < 3) {
+        return usageError(
+            "split",
+            "usage: fragfs split <input> (--chunk-size <size> | --chunks <n>) "
+            "[--output-prefix <prefix>]");
+    }
+
+    const std::filesystem::path input = args[1];
+    uint64_t chunkSize = 0;
+    uint64_t chunks = 0;
+    bool haveChunkSize = false;
+    bool haveChunks = false;
+    std::optional<std::filesystem::path> outputPrefix;
+
+    for (std::size_t i = 2; i < args.size(); ++i) {
+        if (args[i] == "--chunk-size" && i + 1 < args.size()) {
+            if (!parseSize(args[++i], chunkSize) || chunkSize == 0) {
+                return usageError("split", "--chunk-size must be a positive size, e.g. 100MB");
+            }
+            haveChunkSize = true;
+        } else if (args[i] == "--chunks" && i + 1 < args.size()) {
+            if (!parseU64(args[++i], chunks) || chunks == 0) {
+                return usageError("split", "--chunks must be a positive integer");
+            }
+            haveChunks = true;
+        } else if (args[i] == "--output-prefix" && i + 1 < args.size()) {
+            outputPrefix = args[++i];
+        } else {
+            return usageError("split", "unexpected argument '" + args[i] + "'");
+        }
+    }
+
+    if (haveChunkSize == haveChunks) {
+        return usageError("split", "provide exactly one of --chunk-size or --chunks");
+    }
+
+    // With --chunks, derive a chunk size that yields at most that many parts.
+    if (haveChunks) {
+        std::error_code sizeError;
+        const uint64_t size = std::filesystem::file_size(input, sizeError);
+        if (sizeError) {
+            return runtimeError("split", "cannot read '" + input.string() +
+                                             "': " + sizeError.message());
+        }
+        if (size == 0) {
+            return runtimeError("split", "input file is empty");
+        }
+        chunkSize = (size + chunks - 1) / chunks;
+    }
+
+    const std::filesystem::path prefix =
+        outputPrefix.has_value() ? *outputPrefix
+                                 : std::filesystem::path(input.string() + ".part");
+
+    const SplitResult result = splitFile(input, prefix, chunkSize);
+    if (!result.ok()) {
+        return runtimeError("split", result.error.message());
+    }
+
+    std::printf("Split %s into %zu part(s) of up to %llu bytes\n", input.c_str(),
+                result.parts.size(),
+                static_cast<unsigned long long>(chunkSize));
+    std::printf("  prefix: %s\n", prefix.c_str());
+    return 0;
+}
+
 int runInfo(const std::vector<std::string>& args) {
     if (args.size() != 2) {
         return usageError("info", "usage: fragfs info <logical-file>");
@@ -224,9 +344,12 @@ int runRead(const std::vector<std::string>& args) {
     }
 
     std::optional<std::filesystem::path> outputPath;
+    bool checkPresence = true;
     for (std::size_t i = 4; i < args.size(); ++i) {
         if (args[i] == "--output" && i + 1 < args.size()) {
             outputPath = args[++i];
+        } else if (args[i] == "--no-check") {
+            checkPresence = false;
         } else {
             return usageError("read", "unexpected argument '" + args[i] + "'");
         }
@@ -243,6 +366,28 @@ int runRead(const std::vector<std::string>& args) {
     auto file = LogicalFile::open(metadataPathFor(args[1]), error);
     if (!file.has_value()) {
         return runtimeError("read", error.message());
+    }
+
+    // Before stitching, make sure every referenced chunk is present and large
+    // enough. Identity (mtime/inode) is intentionally not required to match,
+    // because copying or moving chunks changes it without changing their bytes.
+    if (checkPresence) {
+        const VerifyReport report =
+            verifyMetadata(file->metadata(), file->baseDirectory());
+        if (!report.valid()) {
+            for (const FragmentVerification& fragment : report.fragments) {
+                if (!fragment.error) {
+                    continue;
+                }
+                std::fprintf(stderr, "fragfs read: missing/unavailable chunk %zu (%s): %s\n",
+                             fragment.fragmentIndex,
+                             file->metadata()
+                                 .fragments[fragment.fragmentIndex]
+                                 .path.c_str(),
+                             fragment.error.message().c_str());
+            }
+            return runtimeError("read", "not all fragments are available");
+        }
     }
 
     std::optional<PosixFile> outputFile;
@@ -437,6 +582,13 @@ int runVerify(const std::vector<std::string>& args) {
     std::printf("Invalid ranges : %zu\n", report.invalidRanges);
     std::printf("Changed files  : %zu\n", report.changedFiles);
     std::printf("\nStatus: %s\n", report.valid() ? "VALID" : "INVALID");
+
+    if (report.valid() && report.changedFiles > 0) {
+        std::fprintf(stderr,
+                     "  warning: %zu physical file(s) differ from when the "
+                     "mapping was recorded (mtime/inode); content may differ\n",
+                     report.changedFiles);
+    }
 
     if (!report.valid()) {
         for (const FragmentVerification& fragment : report.fragments) {

@@ -420,10 +420,11 @@ modification; device and inode detect replacement (delete-and-recreate). This
 turns a silent correctness hazard — reading the wrong bytes through a stale
 mapping — into an explicit `physical_file_changed` report.
 
-**Consequence:** metadata grows by 36 bytes per fragment. `verify` becomes
-strict: touching a fragment's mtime marks the logical file INVALID, which is
-the honest answer ("the bytes may have changed") at the cost of some noise for
-metadata-only touches. Identity is best-effort across filesystems: inode
-semantics vary, and copies/restores legitimately change it, which is exactly
-the trade-off D20 described. `read` is unchanged and still relies on the
-physical-range bounds check rather than paying an `fstat` per read.
+**Consequence:** metadata grows by 36 bytes per fragment. `verify` distinguishes
+two levels: `valid()` (metadata sound, every file present and in range — the
+mapping is usable) and `unchanged()` (identities also match). A copied or moved
+chunk legitimately changes mtime/device/inode without changing its bytes, so an
+identity change is reported as a warning, not a hard failure; missing files and
+out-of-range mappings still fail. `read` performs a presence/range pre-check
+(naming any missing chunk) before stitching, and does not require identity to
+match, so a reconstruction never silently omits a fragment.

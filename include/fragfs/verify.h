@@ -20,9 +20,13 @@ struct FragmentVerification {
     std::error_code error;
 };
 
-// Full verification report. `valid()` is true only when the metadata is
-// structurally sound and every fragment's physical file exists, has a range
-// inside it, and still matches the identity recorded at creation time.
+// Full verification report.
+//
+// `valid()` means the mapping is usable: the metadata is structurally sound and
+// every fragment's physical file exists with a range inside it. `unchanged()`
+// additionally requires the recorded identity to match, which is stricter than
+// most workflows need — copying or moving a chunk legitimately changes its
+// mtime/device/inode without changing its bytes.
 struct VerifyReport {
     std::error_code metadataError;
     std::vector<FragmentVerification> fragments;
@@ -31,8 +35,11 @@ struct VerifyReport {
     std::size_t changedFiles = 0;
 
     bool valid() const {
-        return !metadataError && missingFiles == 0 && invalidRanges == 0 &&
-               changedFiles == 0;
+        return !metadataError && missingFiles == 0 && invalidRanges == 0;
+    }
+
+    bool unchanged() const {
+        return valid() && changedFiles == 0;
     }
 };
 

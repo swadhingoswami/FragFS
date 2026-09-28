@@ -24,8 +24,10 @@ void printUsage(std::FILE* out) {
         "more chunks.\n"
         "\n"
         "Commands:\n"
+        "  split <input> (--chunk-size <size> | --chunks <n>) [--output-prefix <p>]\n"
+        "                                        Split a file into chunks (KB/MB/GB)\n"
         "  info <logical-file>                   Show metadata for a logical file\n"
-        "  read <logical-file> <offset> <size> [--output <file>]\n"
+        "  read <logical-file> <offset> <size> [--output <file>] [--no-check]\n"
         "                                        Read a logical byte range\n"
         "  append <logical-file> <file>          Append one physical file\n"
         "  add <logical-file> <file> --physical-offset <n> --length <n>\n"
@@ -70,6 +72,9 @@ int main(int argc, char** argv) {
 
     if (command == "create") {
         return fragfs::cli::runCreate(args);
+    }
+    if (command == "split") {
+        return fragfs::cli::runSplit(args);
     }
     if (command == "info") {
         return fragfs::cli::runInfo(args);

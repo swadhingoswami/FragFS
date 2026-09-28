@@ -132,7 +132,10 @@ TEST_CASE("verification detects a physical file modified after creation") {
     const fragfs::VerifyReport report =
         fragfs::verifyMetadata(built.metadata, dir.path);
 
-    FRAGFS_CHECK(!report.valid());
+    // The file is present and in range, so the mapping is still usable...
+    FRAGFS_CHECK(report.valid());
+    // ...but the recorded identity no longer matches.
+    FRAGFS_CHECK(!report.unchanged());
     FRAGFS_CHECK_EQ(report.changedFiles, std::size_t{1});
     FRAGFS_CHECK(report.fragments[0].changed);
 }

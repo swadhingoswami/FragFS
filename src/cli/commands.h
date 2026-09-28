@@ -16,6 +16,7 @@ namespace fragfs::cli {
 int runAggregate(const std::vector<std::string>& args);
 
 int runCreate(const std::vector<std::string>& args);
+int runSplit(const std::vector<std::string>& args);
 int runInfo(const std::vector<std::string>& args);
 int runRead(const std::vector<std::string>& args);
 int runAppend(const std::vector<std::string>& args);

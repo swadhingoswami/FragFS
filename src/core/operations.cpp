@@ -5,8 +5,11 @@
 #include <fragfs/metadata_store.h>
 #include <fragfs/posix_file.h>
 
+#include <algorithm>
 #include <cstddef>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace fragfs {
 namespace {
@@ -38,6 +41,14 @@ std::error_code statPhysicalFile(const std::filesystem::path& file, FileIdentity
 
 std::error_code validateResult(const Metadata& metadata) {
     return metadata.validate().error;
+}
+
+std::string zeroPadded(uint64_t value, std::size_t width) {
+    std::string digits = std::to_string(value);
+    if (digits.size() < width) {
+        digits.insert(0, width - digits.size(), '0');
+    }
+    return digits;
 }
 
 } // namespace
@@ -171,6 +182,94 @@ std::error_code removeFragment(Metadata& metadata, std::size_t fragmentIndex) {
     metadata.logicalSize -= removedLength;
 
     return validateResult(metadata);
+}
+
+SplitResult splitFile(const std::filesystem::path& input,
+                      const std::filesystem::path& outputPrefix,
+                      uint64_t chunkSize) {
+    SplitResult result;
+    if (chunkSize == 0) {
+        result.error = make_error_code(ErrorCode::invalid_range);
+        return result;
+    }
+
+    std::error_code error;
+    auto in = PosixFile::open(input, OpenFlags::Read, error);
+    if (!in) {
+        if (error == std::errc::no_such_file_or_directory) {
+            result.error = make_error_code(ErrorCode::missing_physical_file);
+        } else {
+            result.error = error ? error : make_error_code(ErrorCode::io_error);
+        }
+        return result;
+    }
+
+    uint64_t size = 0;
+    error = in->size(size);
+    if (error) {
+        result.error = error;
+        return result;
+    }
+    if (size == 0) {
+        result.error = make_error_code(ErrorCode::empty_physical_file);
+        return result;
+    }
+
+    // Number of parts and the zero-padding width for their names.
+    const uint64_t partCount = (size + chunkSize - 1) / chunkSize;
+    std::size_t width = std::to_string(partCount - 1).size();
+    if (width < 3) {
+        width = 3;
+    }
+
+    std::vector<char> buffer(1024 * 1024);
+    uint64_t offset = 0;
+    for (uint64_t part = 0; part < partCount; ++part) {
+        const uint64_t thisSize = std::min(chunkSize, size - offset);
+        const std::filesystem::path partPath(
+            outputPrefix.string() + zeroPadded(part, width));
+
+        auto out = PosixFile::open(
+            partPath, OpenFlags::Write | OpenFlags::Create | OpenFlags::Truncate,
+            error);
+        if (!out) {
+            result.error = error ? error : make_error_code(ErrorCode::io_error);
+            return result;
+        }
+
+        uint64_t written = 0;
+        while (written < thisSize) {
+            const std::size_t want = static_cast<std::size_t>(
+                std::min<uint64_t>(buffer.size(), thisSize - written));
+            std::size_t got = 0;
+            error = in->pread(offset + written, buffer.data(), want, got);
+            if (error) {
+                result.error = error;
+                return result;
+            }
+            if (got == 0) {
+                result.error = make_error_code(ErrorCode::truncated_metadata);
+                return result;
+            }
+
+            std::size_t put = 0;
+            error = out->pwrite(written, buffer.data(), got, put);
+            if (error) {
+                result.error = error;
+                return result;
+            }
+            if (put != got) {
+                result.error = make_error_code(ErrorCode::io_error);
+                return result;
+            }
+            written += got;
+        }
+
+        result.parts.push_back(partPath);
+        offset += thisSize;
+    }
+
+    return result;
 }
 
 } // namespace fragfs

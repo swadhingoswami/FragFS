@@ -87,20 +87,21 @@ A large file is split into numbered chunks. After moving the chunks elsewhere,
 map them back into the original — without copying any data:
 
 ```bash
-# Map the chunks, in order, into the logical file `original.bin`.
-fragfs original.bin chunk_000 chunk_001 chunk_002
+# Split the original into chunks (by size or by count).
+fragfs split big.bin --chunk-size 100MB
+fragfs split big.bin --chunks 8
+
+# Move the chunks anywhere, then map them back into a logical file.
+fragfs original.bin big.bin.part000 big.bin.part001 big.bin.part002
 
 # Running it again appends more chunks.
-fragfs original.bin chunk_003
+fragfs original.bin big.bin.part003
 
-# Inspect the mapping.
-fragfs info original.bin
-
-# Reconstruct/read the original bytes (binary output to a file or pipe).
-fragfs read original.bin 0 120000000 --output restored.bin
-
-# Confirm every chunk is still present and unchanged.
+# Check every referenced chunk is present before reconstructing.
 fragfs verify original.bin
+
+# Reconstruct/read the original bytes (fails if any chunk is missing).
+fragfs read original.bin 0 120000000 --output restored.bin
 ```
 
 The equivalent long forms are also available:
