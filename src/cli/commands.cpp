@@ -105,7 +105,14 @@ int runCreate(const std::vector<std::string>& args) {
         return runtimeError("create", built.error.message());
     }
 
-    const std::error_code error = writeMetadataFile(metadataPath, built.metadata);
+    // Serialise with other writers, then publish the new metadata atomically.
+    std::error_code error;
+    std::optional<MetadataLock> lock = MetadataLock::acquire(metadataPath, error);
+    if (!lock.has_value()) {
+        return runtimeError("create", "cannot lock '" + metadataPath.string() +
+                                          "': " + error.message());
+    }
+    error = writeMetadataFile(metadataPath, built.metadata);
     if (error) {
         return runtimeError("create", "cannot write '" + metadataPath.string() +
                                           "': " + error.message());
@@ -242,27 +249,26 @@ int runAppend(const std::vector<std::string>& args) {
         return usageError("append", "usage: fragfs append <logical-file> <file>");
     }
 
-    std::filesystem::path metadataPath;
-    std::optional<Metadata> metadata =
-        loadMetadata("append", args[1], metadataPath);
-    if (!metadata.has_value()) {
-        return 1;
-    }
+    const std::filesystem::path metadataPath = metadataPathFor(args[1]);
+    uint64_t newSize = 0;
+    std::size_t fragmentCount = 0;
 
-    const std::error_code error =
-        appendFile(*metadata, args[2], metadataPath);
+    const std::error_code error = updateMetadata(
+        metadataPath, [&](Metadata& metadata) -> std::error_code {
+            const std::error_code mutation = appendFile(metadata, args[2], metadataPath);
+            if (!mutation) {
+                newSize = metadata.logicalSize;
+                fragmentCount = metadata.fragments.size();
+            }
+            return mutation;
+        });
     if (error) {
         return runtimeError("append", error.message());
     }
-    const std::error_code writeError = writeMetadataFile(metadataPath, *metadata);
-    if (writeError) {
-        return runtimeError("append", writeError.message());
-    }
 
     std::printf("Appended %s; logical size is now %llu bytes (%zu fragments)\n",
-                args[2].c_str(),
-                static_cast<unsigned long long>(metadata->logicalSize),
-                metadata->fragments.size());
+                args[2].c_str(), static_cast<unsigned long long>(newSize),
+                fragmentCount);
     return 0;
 }
 
@@ -299,25 +305,25 @@ int runAdd(const std::vector<std::string>& args) {
             "add", "both --physical-offset and --length are required");
     }
 
-    std::filesystem::path metadataPath;
-    std::optional<Metadata> metadata = loadMetadata("add", args[1], metadataPath);
-    if (!metadata.has_value()) {
-        return 1;
-    }
+    const std::filesystem::path metadataPath = metadataPathFor(args[1]);
+    uint64_t newSize = 0;
 
-    const std::error_code error =
-        addRange(*metadata, args[2], physicalOffset, length, metadataPath);
+    const std::error_code error = updateMetadata(
+        metadataPath, [&](Metadata& metadata) -> std::error_code {
+            const std::error_code mutation =
+                addRange(metadata, args[2], physicalOffset, length, metadataPath);
+            if (!mutation) {
+                newSize = metadata.logicalSize;
+            }
+            return mutation;
+        });
     if (error) {
         return runtimeError("add", error.message());
-    }
-    const std::error_code writeError = writeMetadataFile(metadataPath, *metadata);
-    if (writeError) {
-        return runtimeError("add", writeError.message());
     }
 
     std::printf("Added %llu bytes from %s; logical size is now %llu bytes\n",
                 static_cast<unsigned long long>(length), args[2].c_str(),
-                static_cast<unsigned long long>(metadata->logicalSize));
+                static_cast<unsigned long long>(newSize));
     return 0;
 }
 
@@ -331,25 +337,25 @@ int runRemove(const std::vector<std::string>& args) {
         return usageError("remove", "<id> must be a non-negative integer");
     }
 
-    std::filesystem::path metadataPath;
-    std::optional<Metadata> metadata = loadMetadata("remove", args[1], metadataPath);
-    if (!metadata.has_value()) {
-        return 1;
-    }
+    const std::filesystem::path metadataPath = metadataPathFor(args[1]);
+    uint64_t newSize = 0;
 
-    const std::error_code error =
-        removeFragment(*metadata, static_cast<std::size_t>(index));
+    const std::error_code error = updateMetadata(
+        metadataPath, [&](Metadata& metadata) -> std::error_code {
+            const std::error_code mutation =
+                removeFragment(metadata, static_cast<std::size_t>(index));
+            if (!mutation) {
+                newSize = metadata.logicalSize;
+            }
+            return mutation;
+        });
     if (error) {
         return runtimeError("remove", error.message());
-    }
-    const std::error_code writeError = writeMetadataFile(metadataPath, *metadata);
-    if (writeError) {
-        return runtimeError("remove", writeError.message());
     }
 
     std::printf("Removed fragment %llu; logical size is now %llu bytes\n",
                 static_cast<unsigned long long>(index),
-                static_cast<unsigned long long>(metadata->logicalSize));
+                static_cast<unsigned long long>(newSize));
     return 0;
 }
 

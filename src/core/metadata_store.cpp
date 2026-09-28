@@ -3,7 +3,9 @@
 #include <fragfs/posix_file.h>
 
 #include <cstddef>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fragfs {
@@ -146,6 +148,49 @@ std::error_code writeMetadataFile(const std::filesystem::path& metadataPath,
 
     // Make the rename itself durable.
     return syncDirectory(baseDirectoryFor(metadataPath));
+}
+
+std::optional<MetadataLock> MetadataLock::acquire(
+    const std::filesystem::path& metadataPath, std::error_code& error) {
+    error.clear();
+
+    // The lock file is separate from the metadata file: the metadata is
+    // replaced by rename, which would break a lock held on the old inode.
+    const std::filesystem::path lockPath(metadataPath.string() + ".lock");
+
+    auto file = PosixFile::open(
+        lockPath, OpenFlags::Read | OpenFlags::Write | OpenFlags::Create, error);
+    if (!file) {
+        return std::nullopt;
+    }
+    error = file->lockExclusive();
+    if (error) {
+        return std::nullopt;
+    }
+    return MetadataLock(std::move(*file));
+}
+
+std::error_code updateMetadata(
+    const std::filesystem::path& metadataPath,
+    const std::function<std::error_code(Metadata&)>& mutate) {
+    std::error_code error;
+    std::optional<MetadataLock> lock = MetadataLock::acquire(metadataPath, error);
+    if (!lock.has_value()) {
+        return error;
+    }
+
+    Metadata metadata;
+    error = readMetadataFile(metadataPath, metadata);
+    if (error) {
+        return error;
+    }
+
+    error = mutate(metadata);
+    if (error) {
+        return error;
+    }
+
+    return writeMetadataFile(metadataPath, metadata);
 }
 
 } // namespace fragfs

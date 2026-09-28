@@ -1,8 +1,11 @@
 #pragma once
 
 #include <fragfs/metadata.h>
+#include <fragfs/posix_file.h>
 
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <system_error>
 
 namespace fragfs {
@@ -37,5 +40,33 @@ std::error_code readMetadataFile(const std::filesystem::path& metadataPath,
 // consistent metadata, never a half-written file.
 std::error_code writeMetadataFile(const std::filesystem::path& metadataPath,
                                   const Metadata& metadata);
+
+// An advisory exclusive lock over a metadata file, used to serialise writers.
+// The lock lives in a sibling "<metadata>.lock" file, so it is independent of
+// the atomic rename of the metadata itself. The lock is released when the
+// object is destroyed.
+class MetadataLock {
+public:
+    MetadataLock(MetadataLock&&) noexcept = default;
+    MetadataLock& operator=(MetadataLock&&) noexcept = default;
+    MetadataLock(const MetadataLock&) = delete;
+    MetadataLock& operator=(const MetadataLock&) = delete;
+
+    // Blocks until the lock is held, or returns std::nullopt with `error` set.
+    static std::optional<MetadataLock> acquire(const std::filesystem::path& metadataPath,
+                                               std::error_code& error);
+
+private:
+    explicit MetadataLock(PosixFile file) : file_(std::move(file)) {}
+
+    PosixFile file_;
+};
+
+// Performs a locked read-modify-write: acquires the writer lock, loads the
+// metadata, applies `mutate`, and writes the result back atomically. Because
+// the lock covers the load as well as the store, concurrent updates cannot
+// lose each other. On error the metadata on disk is left unchanged.
+std::error_code updateMetadata(const std::filesystem::path& metadataPath,
+                               const std::function<std::error_code(Metadata&)>& mutate);
 
 } // namespace fragfs

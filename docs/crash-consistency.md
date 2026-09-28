@@ -45,9 +45,23 @@ the file's contents, then the directory entry.
   directory. Where a platform rejects directory `fsync` (some filesystems
   return `EINVAL`/`ENOTSUP`), `syncDirectory()` treats it as best-effort rather
   than failing the operation.
-- Concurrent *writers* are not serialised. Two simultaneous writers would race
-  on the same `.tmp` path. Reader/writer and multi-reader safety are in scope;
-  multi-writer coordination is not.
 - The physical files are not snapshotted. If another process modifies a
   fragment after `create`, reads and `verify` will report the mismatch
   (`physical_range_out_of_bounds`); FragFS does not lock or copy the data.
+
+## Writer serialisation
+
+Crash safety alone does not stop two writers from losing each other's updates:
+both could load the same metadata, each append its own fragment, and the second
+`rename` would overwrite the first's work. FragFS therefore serialises writers
+with an advisory exclusive lock (`flock`) on a sibling `<metadata>.lock` file.
+
+The lock is held across the whole read-modify-write cycle by
+`updateMetadata()`, not just the final write, because the load is part of the
+race. `create` takes the same lock around its single write. `flock` locks
+belong to the open file description, so separate opens — including from
+different threads of one process — exclude each other; this is why `flock` is
+used rather than per-process `fcntl` locks.
+
+The lock file is separate from the metadata file on purpose: the metadata is
+replaced by `rename`, which would invalidate a lock held on the old inode.

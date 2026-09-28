@@ -384,3 +384,23 @@ truncation is reported as truncation and corruption as `checksum_mismatch`. CRC-
 detects accidental damage, not deliberate tampering; it is an integrity check,
 not a security mechanism. The checksum covers the fragment region, while header
 fields are constrained by explicit validation.
+
+## D25 — Writers are serialised across the whole read-modify-write
+
+**Decision:** metadata mutations take an advisory exclusive `flock` on a sibling
+`<metadata>.lock` file. The lock is held for the entire load → mutate → store
+cycle (via `updateMetadata`), not only for the final write.
+
+**Why:** atomic replacement protects readers from torn files, but it does not
+protect writers from each other. Two processes that both load, append, and
+store would each overwrite the other's update — a lost update. The load is part
+of the race, so the lock must cover it. `flock` is chosen over `fcntl` because
+`flock` locks belong to the open file description, so independent opens (even
+within one process) exclude each other, which makes it correct for threads too.
+
+**Consequence:** writers are fully serialised; readers are unaffected (they do
+not take the lock and rely on rename atomicity). The lock file is separate from
+the metadata because the metadata is replaced by `rename`, which would
+invalidate a lock held on the old inode. A crashed writer releases its lock
+automatically when the process exits. Cross-host locking still depends on the
+filesystem's `flock` support (NFS is the usual caveat).

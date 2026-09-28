@@ -80,6 +80,15 @@ public:
     // Flushes the file's data and metadata to stable storage.
     std::error_code sync();
 
+    // Advisory exclusive lock (flock LOCK_EX), blocking until acquired. Used
+    // to serialise metadata writers. flock locks belong to the open file
+    // description, so separate opens — even within one process — exclude each
+    // other, which is what makes this usable for intra-process threads too.
+    std::error_code lockExclusive();
+
+    // Releases a lock taken with lockExclusive().
+    std::error_code unlock();
+
 private:
     explicit PosixFile(int descriptor) : descriptor_(descriptor) {}
 

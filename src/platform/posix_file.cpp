@@ -5,6 +5,7 @@
 #include <limits>
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -189,6 +190,31 @@ std::error_code PosixFile::sync() {
         }
         return lastError();
     }
+}
+
+std::error_code PosixFile::lockExclusive() {
+    if (descriptor_ < 0) {
+        return std::make_error_code(std::errc::bad_file_descriptor);
+    }
+    for (;;) {
+        if (::flock(descriptor_, LOCK_EX) == 0) {
+            return {};
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        return lastError();
+    }
+}
+
+std::error_code PosixFile::unlock() {
+    if (descriptor_ < 0) {
+        return std::make_error_code(std::errc::bad_file_descriptor);
+    }
+    if (::flock(descriptor_, LOCK_UN) == 0) {
+        return {};
+    }
+    return lastError();
 }
 
 std::error_code syncDirectory(const std::filesystem::path& directory) {
