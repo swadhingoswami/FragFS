@@ -1,74 +1,33 @@
 #include <fragfs/logical_file.h>
 
+#include <fragfs/metadata_store.h>
+
 #include <cstddef>
+#include <mutex>
 #include <utility>
-#include <vector>
 
 namespace fragfs {
-namespace {
-
-// Refuse to load an implausibly large metadata file rather than allocating
-// memory proportional to it. Real metadata is kilobytes; anything near this
-// bound indicates corruption or a hostile file.
-constexpr uint64_t kMaxMetadataBytes = 256ull * 1024 * 1024;
-
-std::error_code readWholeFile(const std::filesystem::path& path,
-                              std::vector<std::byte>& out) {
-    std::error_code error;
-    auto file = PosixFile::open(path, OpenFlags::Read, error);
-    if (!file) {
-        return error ? error : make_error_code(ErrorCode::io_error);
-    }
-
-    uint64_t size = 0;
-    error = file->size(size);
-    if (error) {
-        return error;
-    }
-    if (size > kMaxMetadataBytes) {
-        return std::make_error_code(std::errc::file_too_large);
-    }
-
-    out.resize(static_cast<std::size_t>(size));
-    std::size_t offset = 0;
-    while (offset < out.size()) {
-        std::size_t bytesRead = 0;
-        error = file->pread(offset, out.data() + offset, out.size() - offset,
-                            bytesRead);
-        if (error) {
-            return error;
-        }
-        if (bytesRead == 0) {
-            // The file shrank between fstat and pread.
-            return make_error_code(ErrorCode::truncated_metadata);
-        }
-        offset += bytesRead;
-    }
-    return {};
-}
-
-} // namespace
 
 std::filesystem::path metadataPathFor(const std::filesystem::path& logicalPath) {
     return std::filesystem::path(logicalPath.string() + ".meta");
 }
 
 LogicalFile::LogicalFile(Metadata metadata, std::filesystem::path baseDirectory)
-    : metadata_(std::move(metadata)), baseDirectory_(std::move(baseDirectory)) {}
+    : metadata_(std::move(metadata)),
+      baseDirectory_(std::move(baseDirectory)),
+      cacheMutex_(std::make_unique<std::mutex>()) {}
+
+LogicalFile::LogicalFile(LogicalFile&&) noexcept = default;
+LogicalFile& LogicalFile::operator=(LogicalFile&&) noexcept = default;
+LogicalFile::~LogicalFile() = default;
 
 std::optional<LogicalFile> LogicalFile::open(const std::filesystem::path& metadataPath,
                                              std::error_code& error) {
     error.clear();
 
-    std::vector<std::byte> buffer;
-    error = readWholeFile(metadataPath, buffer);
+    Metadata metadata;
+    error = readMetadataFile(metadataPath, metadata);
     if (error) {
-        return std::nullopt;
-    }
-
-    DecodeResult decoded = deserializeMetadata(buffer.data(), buffer.size());
-    if (!decoded.ok()) {
-        error = decoded.error;
         return std::nullopt;
     }
 
@@ -77,21 +36,16 @@ std::optional<LogicalFile> LogicalFile::open(const std::filesystem::path& metada
         baseDirectory = ".";
     }
 
-    return LogicalFile(std::move(decoded.metadata), std::move(baseDirectory));
-}
-
-std::filesystem::path LogicalFile::resolvePhysicalPath(const std::string& storedPath) const {
-    const std::filesystem::path path(storedPath);
-    if (path.is_absolute()) {
-        return path;
-    }
-    return baseDirectory_ / path;
+    return LogicalFile(std::move(metadata), std::move(baseDirectory));
 }
 
 std::error_code LogicalFile::acquirePhysicalFile(const std::string& storedPath,
                                                  PosixFile*& file) {
-    const std::filesystem::path resolved = resolvePhysicalPath(storedPath);
+    const std::filesystem::path resolved =
+        resolvePhysicalPath(storedPath, baseDirectory_);
     const std::string key = resolved.string();
+
+    const std::lock_guard<std::mutex> lock(*cacheMutex_);
 
     const auto existing = openFiles_.find(key);
     if (existing != openFiles_.end()) {

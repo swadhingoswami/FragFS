@@ -20,6 +20,10 @@ const char* messageFor(ErrorCode code) {
         case ErrorCode::missing_physical_file:     return "physical file is missing";
         case ErrorCode::physical_range_out_of_bounds:
             return "physical range is outside the file";
+        case ErrorCode::not_a_regular_file:        return "path is not a regular file";
+        case ErrorCode::empty_physical_file:       return "physical file is empty";
+        case ErrorCode::fragment_index_out_of_range:
+            return "fragment index is out of range";
         case ErrorCode::io_error:                  return "I/O error";
     }
     return "unknown fragfs error";

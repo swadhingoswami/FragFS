@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -20,10 +22,17 @@ std::filesystem::path metadataPathFor(const std::filesystem::path& logicalPath);
 // A logical file: metadata plus the ability to read the mapped bytes.
 //
 // It owns the mapping and a cache of open physical files. Reads translate a
-// logical range into physical reads via Mapper and execute them with pread(),
-// so no shared file position is involved.
+// logical range into physical reads via Mapper and execute them with pread().
+// The descriptor cache is guarded by a mutex, and because pread() carries its
+// own offset, concurrent reads from multiple threads are safe.
 class LogicalFile {
 public:
+    LogicalFile(LogicalFile&&) noexcept;
+    LogicalFile& operator=(LogicalFile&&) noexcept;
+    LogicalFile(const LogicalFile&) = delete;
+    LogicalFile& operator=(const LogicalFile&) = delete;
+    ~LogicalFile();
+
     // Loads and decodes metadata from `metadataPath`.
     //
     // Physical file paths stored in the metadata are resolved relative to the
@@ -40,8 +49,7 @@ public:
     // Reads up to `size` bytes starting at `logicalOffset` into `buffer`.
     // `bytesRead` receives the number of bytes actually available, which is
     // less than `size` only at end of file. Reads at or past end of file
-    // succeed with zero bytes. This is not const because it may open and cache
-    // physical files.
+    // succeed with zero bytes.
     std::error_code read(uint64_t logicalOffset,
                          void* buffer,
                          std::size_t size,
@@ -50,16 +58,15 @@ public:
 private:
     LogicalFile(Metadata metadata, std::filesystem::path baseDirectory);
 
-    std::filesystem::path resolvePhysicalPath(const std::string& storedPath) const;
-
     // Returns an open descriptor for `storedPath`, opening and caching it on
     // first use. The returned pointer stays valid for the lifetime of the
-    // LogicalFile (unordered_map references are stable).
+    // LogicalFile (unordered_map references are stable). Thread-safe.
     std::error_code acquirePhysicalFile(const std::string& storedPath,
                                         PosixFile*& file);
 
     Metadata metadata_;
     std::filesystem::path baseDirectory_;
+    std::unique_ptr<std::mutex> cacheMutex_;
     std::unordered_map<std::string, PosixFile> openFiles_;
 };
 

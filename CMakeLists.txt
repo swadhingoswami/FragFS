@@ -71,6 +71,9 @@ add_library(fragfs_core STATIC
     src/core/logical_file.cpp
     src/core/mapper.cpp
     src/core/metadata.cpp
+    src/core/metadata_store.cpp
+    src/core/operations.cpp
+    src/core/verify.cpp
     src/core/version.cpp
     src/platform/posix_file.cpp)
 
@@ -78,7 +81,10 @@ target_include_directories(fragfs_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
 # std::filesystem requires an explicit library on GCC before 9.
+find_package(Threads REQUIRED)
+
 target_link_libraries(fragfs_core PUBLIC
+    Threads::Threads
     $<$<AND:$<CXX_COMPILER_ID:GNU>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,9>>:stdc++fs>)
 
 target_link_libraries(fragfs_core PRIVATE fragfs_warnings)
@@ -86,7 +92,9 @@ target_link_libraries(fragfs_core PRIVATE fragfs_warnings)
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-add_executable(fragfs src/cli/main.cpp)
+add_executable(fragfs
+    src/cli/commands.cpp
+    src/cli/main.cpp)
 target_link_libraries(fragfs PRIVATE fragfs_core fragfs_warnings)
 
 # ---------------------------------------------------------------------------

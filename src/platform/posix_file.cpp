@@ -191,4 +191,24 @@ std::error_code PosixFile::sync() {
     }
 }
 
+std::error_code syncDirectory(const std::filesystem::path& directory) {
+    const int descriptor = ::open(directory.c_str(), O_RDONLY);
+    if (descriptor < 0) {
+        return lastError();
+    }
+
+    std::error_code result;
+    if (::fsync(descriptor) != 0) {
+        const int error = errno;
+        // Some platforms/filesystems reject fsync on a directory descriptor.
+        // The rename is still atomic; only the durability hint is lost, so do
+        // not turn that into a failure.
+        if (error != EINVAL && error != ENOTSUP && error != EBADF) {
+            result = std::error_code(error, std::generic_category());
+        }
+    }
+    (void)::close(descriptor);
+    return result;
+}
+
 } // namespace fragfs

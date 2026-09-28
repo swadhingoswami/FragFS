@@ -86,4 +86,9 @@ private:
     int descriptor_ = -1;
 };
 
+// Flushes a directory's entries to stable storage. Needed after an atomic
+// rename so the rename itself is durable, not just the file contents.
+// Best-effort on platforms whose fsync does not support directories.
+std::error_code syncDirectory(const std::filesystem::path& directory);
+
 } // namespace fragfs

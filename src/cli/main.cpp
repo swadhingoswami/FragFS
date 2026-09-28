@@ -1,3 +1,5 @@
+#include "commands.h"
+
 #include <fragfs/version.h>
 
 #include <cstdio>
@@ -18,12 +20,15 @@ void printUsage(std::FILE* out) {
         "Commands:\n"
         "  create <output> <file>...             Create a logical file from physical files\n"
         "  info <logical-file>                   Show metadata for a logical file\n"
-        "  read <logical-file> <offset> <size>   Read a logical byte range\n"
+        "  read <logical-file> <offset> <size> [--output <file>]\n"
+        "                                        Read a logical byte range\n"
         "  append <logical-file> <file>          Append a physical file to the mapping\n"
-        "  add <logical-file> <file>             Add a partial physical range\n"
+        "  add <logical-file> <file> --physical-offset <n> --length <n>\n"
+        "                                        Add a partial physical range\n"
         "  remove <logical-file> <id>            Remove a fragment by id\n"
         "  verify <logical-file>                 Validate metadata and mappings\n"
-        "  benchmark <logical-file>              Benchmark logical reads\n"
+        "  benchmark <logical-file> [--iterations <n>]\n"
+        "                                        Benchmark logical reads\n"
         "  mount <logical-file> <dir>            Mount through a filesystem adapter\n"
         "  unmount <dir>                         Unmount a FragFS mount point\n"
         "\n"
@@ -34,13 +39,6 @@ void printUsage(std::FILE* out) {
 
 void printVersion(std::FILE* out) {
     std::fprintf(out, "%s %s\n", kProgramName, fragfs::versionString().c_str());
-}
-
-int commandNotImplemented(const std::string& command) {
-    std::fprintf(stderr,
-        "fragfs: '%s' is not implemented yet (planned for a later milestone)\n",
-        command.c_str());
-    return 2;
 }
 
 } // namespace
@@ -64,16 +62,37 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // The full command surface is recognised from the first milestone so the
-    // CLI contract is stable, even though the behaviour lands incrementally.
-    static const std::vector<std::string> kKnownCommands = {
-        "create", "info", "read", "append", "add",
-        "remove", "verify", "benchmark", "mount", "unmount"};
+    if (command == "create") {
+        return fragfs::cli::runCreate(args);
+    }
+    if (command == "info") {
+        return fragfs::cli::runInfo(args);
+    }
+    if (command == "read") {
+        return fragfs::cli::runRead(args);
+    }
+    if (command == "append") {
+        return fragfs::cli::runAppend(args);
+    }
+    if (command == "add") {
+        return fragfs::cli::runAdd(args);
+    }
+    if (command == "remove") {
+        return fragfs::cli::runRemove(args);
+    }
+    if (command == "verify") {
+        return fragfs::cli::runVerify(args);
+    }
+    if (command == "benchmark") {
+        return fragfs::cli::runBenchmark(args);
+    }
 
-    for (const std::string& known : kKnownCommands) {
-        if (command == known) {
-            return commandNotImplemented(command);
-        }
+    if (command == "mount" || command == "unmount") {
+        std::fprintf(stderr,
+                     "fragfs: '%s' is not implemented yet (filesystem adapter "
+                     "milestone)\n",
+                     command.c_str());
+        return 2;
     }
 
     std::fprintf(stderr, "fragfs: unknown command '%s'\n\n", command.c_str());
