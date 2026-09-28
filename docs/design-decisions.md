@@ -245,3 +245,41 @@ non-retryable is the safe choice.
 
 **Consequence:** callers see `EINTR`-free reads/writes but must treat a failed
 `close` as "the descriptor is gone", not "try again".
+
+## D17 — Metadata sidecar naming and relative-path resolution
+
+**Decision:** the metadata for a logical file `combined.ff` lives at
+`combined.ff.meta` (the logical path plus `.meta`). Physical file paths stored
+in the metadata are resolved relative to the directory containing the metadata
+file; absolute paths are used as-is.
+
+**Why:** keeping the mapping in a sidecar means the logical file name stays
+clean and the format is unambiguous (the logical file is not a container). A
+fixed, derived name means every command finds the metadata without a separate
+argument. Resolving relative paths against the metadata's directory makes a
+logical file and its fragments relocatable *as a unit*: move the directory and
+the mapping still works, which would not be true if paths were resolved against
+the process's current working directory.
+
+**Consequence:** create-time code (a later milestone) is responsible for
+choosing what to store (relative where possible). A relative path with `..` can
+escape the base directory; that is permitted, and verification (a later
+milestone) will surface missing or moved files explicitly rather than silently.
+
+## D18 — Physical files are opened lazily and cached
+
+**Decision:** `LogicalFile` does not open physical files at load time. It opens
+each distinct file on first use and caches one descriptor per resolved path for
+the lifetime of the object.
+
+**Why:** opening every fragment eagerly would fail on a logical file whose
+fragments are not all present, even when the caller only reads a range that is
+present, and it would consume one descriptor per fragment (a logical file with
+thousands of fragments could exhaust `RLIMIT_NOFILE`). Lazy opening also means
+an unreferenced fragment costs nothing.
+
+**Consequence:** a missing physical file is reported at read time
+(`missing_physical_file`), not at open time. Because `pread` carries its own
+offset and a shared descriptor has no mutable position, the cache is safe to
+share across concurrent readers without locking; eviction (an LRU) is future
+work if descriptor pressure becomes a concern.

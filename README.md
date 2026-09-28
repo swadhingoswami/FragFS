@@ -136,9 +136,8 @@ and attaches the resulting `fragfs` binaries to a GitHub Release.
 
 ## Current status
 
-Milestone 6: a move-only RAII `PosixFile` abstraction (open/close/pread/pwrite/
-size/sync) with `errno` mapped to `std::error_code`. Logical reads and commands
-are still to come.
+Milestone 7: `LogicalFile` loads metadata and serves logical reads across
+fragments via `pread`, with lazy physical-file caching. No CLI commands yet.
 
 ## Roadmap
 
@@ -149,8 +148,8 @@ are still to come.
 [x] Metadata serialization
 [x] Logical-to-physical mapper
 [x] POSIX file abstraction
+[x] Logical reads
 [x] Linux/macOS CI (+ sanitizers) and tagged releases
-[ ] Logical reads
 [ ] create command
 [ ] info command
 [ ] read command

@@ -68,6 +68,7 @@ endif()
 add_library(fragfs_core STATIC
     src/core/error.cpp
     src/core/fragment.cpp
+    src/core/logical_file.cpp
     src/core/mapper.cpp
     src/core/metadata.cpp
     src/core/version.cpp

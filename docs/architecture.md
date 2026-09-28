@@ -64,21 +64,30 @@ reads later. The rest of FragFS never sees a raw descriptor or a POSIX header.
 
 ## Data flow of a read
 
+`LogicalFile` ties the pieces together:
+
 ```text
 LogicalFile::read(logicalOffset, buffer, size)
         │
         ▼
-Mapper::plan(logicalOffset, size)   ->  [ ReadStep, ReadStep, ... ]
+Mapper::plan(logicalOffset, size)          (pure)
         │
-        ▼ for each step
-POSIXFile::pread(physicalOffset, buffer, length)
+        ▼  ReadPlan = [ ReadStep, ReadStep, ... ]
+        │
+        ▼  for each step
+acquirePhysicalFile(fragment.path)          (lazy open + cache)
+        │
+        ▼
+PosixFile::pread(physicalOffset, buffer, length)
         │
         ▼
      physical file
 ```
 
 The mapper is intentionally a pure computation with no I/O, which makes the
-offset-translation logic exhaustively unit-testable without touching a disk.
+offset-translation logic exhaustively unit-testable without touching a disk. A
+physical file shorter than its mapping claims is reported as
+`physical_range_out_of_bounds` rather than silently returning a short read.
 
 ## Why this separation matters
 
