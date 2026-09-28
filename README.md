@@ -202,7 +202,8 @@ implemented.
 [x] Concurrency
 [x] Performance benchmarks
 [x] Linux/macOS CI (+ sanitizers) and tagged releases
-[ ] FUSE (Linux) / user-space filesystem (macOS) adapter
+[~] FUSE (Linux) / user-space filesystem (macOS) adapter — design only,
+    see docs/fuse-adapter.md
 ```
 
 ## License
