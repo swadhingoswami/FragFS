@@ -19,8 +19,10 @@
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -51,6 +53,41 @@ public:
         registry().push_back({std::move(name), std::move(function)});
     }
 };
+
+// ---------------------------------------------------------------------------
+// Value formatting
+// ---------------------------------------------------------------------------
+// Assertion output should never fail to compile because a value type has no
+// operator<<. appendValue prints what it can and degrades gracefully otherwise.
+
+template <typename T, typename = void>
+struct isStreamable : std::false_type {};
+
+template <typename T>
+struct isStreamable<T, std::void_t<decltype(
+    std::declval<std::ostream&>() << std::declval<const T&>())>>
+    : std::true_type {};
+
+template <typename T>
+void appendValue(std::ostream& out, const T& value) {
+    if constexpr (isStreamable<T>::value) {
+        out << value;
+    } else {
+        out << "<unprintable>";
+    }
+}
+
+// More specialised overload: prints optionals as `optional(x)` / `nullopt`.
+template <typename T>
+void appendValue(std::ostream& out, const std::optional<T>& value) {
+    if (value.has_value()) {
+        out << "optional(";
+        appendValue(out, *value);
+        out << ')';
+    } else {
+        out << "nullopt";
+    }
+}
 
 inline int runAll(const std::string& suiteName) {
     int passed = 0;
@@ -99,18 +136,23 @@ inline int runAll(const std::string& suiteName) {
         }                                                                        \
     } while (false)
 
+// Copies both operands by value so that temporaries (e.g. the result of
+// optional::value()) are not captured as dangling references.
 #define FRAGFS_CHECK_EQ(actual, expected)                                        \
     do {                                                                         \
-        const auto& fragfs_detail_actual = (actual);                             \
-        const auto& fragfs_detail_expected = (expected);                         \
+        const auto fragfs_detail_actual = (actual);                              \
+        const auto fragfs_detail_expected = (expected);                          \
         if (!(fragfs_detail_actual == fragfs_detail_expected)) {                 \
             std::ostringstream fragfs_detail_stream;                             \
             fragfs_detail_stream << __FILE__ << ':' << __LINE__                  \
                                  << ": CHECK_EQ failed: " #actual                \
-                                 << " == " #expected                             \
-                                 << " (actual: " << fragfs_detail_actual         \
-                                 << ", expected: " << fragfs_detail_expected     \
-                                 << ')';                                         \
+                                 << " == " #expected << " (actual: ";            \
+            ::fragfs::test::appendValue(fragfs_detail_stream,                    \
+                                        fragfs_detail_actual);                   \
+            fragfs_detail_stream << ", expected: ";                              \
+            ::fragfs::test::appendValue(fragfs_detail_stream,                    \
+                                        fragfs_detail_expected);                 \
+            fragfs_detail_stream << ')';                                         \
             throw ::fragfs::test::Failure{fragfs_detail_stream.str()};           \
         }                                                                        \
     } while (false)

@@ -43,6 +43,7 @@ target_compile_options(fragfs_warnings INTERFACE
 # fragfs_core contains everything except the CLI and (later) the filesystem
 # adapters. It must never depend on FUSE or on any CLI concerns.
 add_library(fragfs_core STATIC
+    src/core/fragment.cpp
     src/core/version.cpp)
 
 target_include_directories(fragfs_core PUBLIC

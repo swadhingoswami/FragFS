@@ -9,3 +9,4 @@ function(fragfs_add_test name)
 endfunction()
 
 fragfs_add_test(smoke_test)
+fragfs_add_test(fragment_test)

@@ -107,14 +107,14 @@ ctest --test-dir build --output-on-failure
 
 ## Current status
 
-Milestone 1: repository skeleton, build system, CLI dispatch, and the test
-harness. **No data-mapping functionality exists yet.**
+Milestone 2: the `Fragment` data model with overflow-checked range accessors.
+No metadata persistence or mapping yet.
 
 ## Roadmap
 
 ```text
 [x] Repository + CMake + CLI skeleton
-[ ] Fragment data model
+[x] Fragment data model
 [ ] Metadata representation
 [ ] Metadata serialization
 [ ] Logical-to-physical mapper

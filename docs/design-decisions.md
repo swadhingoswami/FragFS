@@ -100,3 +100,21 @@ interface would not change.
 
 **Rejected:** Copying physical data into a single growing file on append;
 re-reading all prior fragments to rebuild a combined blob.
+
+## D9 — Half-open ranges and explicit overflow checks
+
+**Decision:** Fragment ranges are half-open (`[start, start + length)`), and
+every end offset is computed through an overflow-checked helper that returns
+`std::optional<uint64_t>` rather than wrapping.
+
+**Why:** Half-open ranges make boundaries unambiguous — the byte at the end of
+one fragment is the start of the next, and a zero-length fragment correctly
+contains nothing. Overflow checking matters because metadata is untrusted: a
+corrupted `length` can make `start + length` wrap to a small value, which would
+turn a validation failure into an out-of-bounds read. `checkedAdd` converts that
+into a detectable `nullopt`.
+
+**Consequence:** `Fragment::logicalEnd()` / `physicalEnd()` are fallible, and
+callers must handle the failure rather than assuming a valid range. Validation
+is explicit (`hasValidRanges()`), not enforced by the type, so a fragment can
+exist transiently in a partially-parsed state.
